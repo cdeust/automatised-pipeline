@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "ai-architect": {
+      "command": "cargo",
+      "args": ["run", "--quiet", "--release", "--manifest-path", "Cargo.toml"]
+    }
+  }
+}

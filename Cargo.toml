@@ -1,0 +1,35 @@
+[package]
+name = "ai-architect-mcp"
+version = "0.0.1"
+edition = "2021"
+description = "Stage-by-stage rewrite of the ai-architect pipeline as an MCP server. One tool per stage. Grown by zetetic + genius agents."
+
+[[bin]]
+name = "ai-architect-mcp"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# source: stages/stage-2.md §12.4 — sha256 for stage-2 transcript_digest.
+# RustCrypto/hashes, primitive-only, audited since 2018. Single-purpose,
+# well-known, sourced — the only kind of dep the zetetic standard allows.
+sha2 = "0.10"
+# source: stages/stage-3.md §7 — LadybugDB graph store for code-intelligence graph.
+# In-process property graph DB, MIT licensed, Cypher query language.
+lbug = "0.15"
+# source: stages/stage-3.md §3a — tree-sitter parser runtime + Rust grammar.
+# MIT licensed. Used by rust_parser.rs to extract typed symbols from .rs files.
+tree-sitter = "0.24"
+tree-sitter-rust = "0.23"
+# source: multi-language parser support — Python and TypeScript grammars.
+# MIT licensed. Used by parser/python.rs and parser/typescript.rs.
+tree-sitter-python = "0.23"
+tree-sitter-typescript = "0.23"
+# source: stages/stage-3-research.md §2 — Tantivy for BM25 full-text search.
+# In-process search engine, MIT licensed (quickwit-oss).
+tantivy = "0.22"
+
+[profile.release]
+opt-level = 3
+lto = "thin"

@@ -1,0 +1,16 @@
+// lib.rs — library entry point for integration tests.
+//
+// Re-exports the modules that integration tests need. The binary entry
+// point remains src/main.rs. Cargo discovers this automatically via
+// convention (src/lib.rs + src/main.rs coexist in the same crate).
+
+pub mod clustering;
+pub mod graph_store;
+pub mod indexer;
+pub mod lsp_client;
+pub mod lsp_resolver;
+pub mod parser;
+pub mod resolver;
+pub mod rust_parser;
+pub mod search;
+pub mod tool_schemas;
