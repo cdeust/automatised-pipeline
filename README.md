@@ -1,6 +1,5 @@
 <p align="center">
-  <strong>automatised-pipeline</strong><br>
-  <em>Codebase intelligence as an MCP server — Rust, LadybugDB graph, tree-sitter, hybrid search.</em>
+  <img src="assets/banner.svg" alt="automatised-pipeline — codebase intelligence as an MCP server" width="100%"/>
 </p>
 
 <p align="center">
