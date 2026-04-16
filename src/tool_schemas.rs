@@ -29,6 +29,10 @@ pub fn tools_list() -> Value {
             analyze_codebase_schema(),
             detect_changes_schema(),
             lsp_resolve_schema(),
+            prepare_prd_input_schema(),
+            validate_prd_against_graph_schema(),
+            check_security_gates_schema(),
+            verify_semantic_diff_schema(),
         ]
     })
 }
@@ -480,6 +484,80 @@ fn lsp_resolve_schema() -> Value {
                     "default": 30000,
                     "description": "Total timeout in milliseconds for LSP resolution."
                 }
+            }
+        }
+    })
+}
+
+fn prepare_prd_input_schema() -> Value {
+    json!({
+        "name": "prepare_prd_input",
+        "description": "Stage 4 — Bundle the verified stage-2 finding + graph intel (matched symbols, impacted communities, impacted processes, graph stats) into stage-4.prd_input.json. Read-only against the graph. Writes one JSON artifact under <output_dir>/runs/<run_id>/findings/<finding_id>/ and updates the run's index.json with stage4 markers. Consumed by the TypeScript PRD generator.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["run_id", "finding_id", "output_dir", "graph_path"],
+            "additionalProperties": false,
+            "properties": {
+                "run_id":     { "type": "string" },
+                "finding_id": { "type": "string" },
+                "output_dir": { "type": "string", "pattern": "^/.+" },
+                "graph_path": { "type": "string", "pattern": "^/.+" }
+            }
+        }
+    })
+}
+
+fn validate_prd_against_graph_schema() -> Value {
+    json!({
+        "name": "validate_prd_against_graph",
+        "description": "Stage 6 — Validate a PRD against the resolved+clustered graph. Three axes: (1) symbol hallucination — claimed symbols that don't exist (critical); (2) community-consistency — affected symbols spanning multiple Leiden communities (warning/critical); (3) process-impact contradiction — PRD claims 'does not affect X' while a changed symbol participates in X (critical). Contract-first on stage-5.affected_symbols.json with regex fallback from the PRD markdown. LLM-free. Read-only. When run_id+finding_id+output_dir are provided, writes stage-6.validation.json under findings/<finding_id>/.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["prd_path", "graph_path"],
+            "additionalProperties": false,
+            "properties": {
+                "prd_path":    { "type": "string", "pattern": "^/.+" },
+                "graph_path":  { "type": "string", "pattern": "^/.+" },
+                "affected_symbols_path": { "type": "string", "pattern": "^/.+", "description": "Optional absolute path to stage-5.affected_symbols.json. When absent, regex fallback extracts claims from the PRD text." },
+                "output_dir":  { "type": "string", "pattern": "^/.+", "description": "Optional; required together with run_id + finding_id to write stage-6.validation.json." },
+                "run_id":      { "type": "string" },
+                "finding_id":  { "type": "string" }
+            }
+        }
+    })
+}
+
+fn check_security_gates_schema() -> Value {
+    json!({
+        "name": "check_security_gates",
+        "description": "Stage 8 — Graph-aware security gates. Runs five checks on the changed_symbols list: S1 auth-critical community touch (critical), S2 unsafe-symbol touch (info-skip until parser records is_unsafe), S3 public-API surface change (warning), S4 unresolved-import introduction (warning/critical), S5 test-coverage structural gap (warning). Returns gates_passed=true iff zero critical flags. LLM-free. Read-only. When run_id+finding_id+output_dir are provided, writes stage-8.security.json.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["graph_path", "changed_symbols"],
+            "additionalProperties": false,
+            "properties": {
+                "graph_path":      { "type": "string", "pattern": "^/.+" },
+                "changed_symbols": { "type": "array", "items": { "type": "string" }, "minItems": 0 },
+                "output_dir":      { "type": "string", "pattern": "^/.+", "description": "Optional; required together with run_id + finding_id to write stage-8.security.json." },
+                "run_id":          { "type": "string" },
+                "finding_id":      { "type": "string" }
+            }
+        }
+    })
+}
+
+fn verify_semantic_diff_schema() -> Value {
+    json!({
+        "name": "verify_semantic_diff",
+        "description": "Stage 9 — Compare a post-implementation graph against a pre-implementation graph to flag regressions: nodes added/removed, edges added/removed, dangling references (edges whose target disappeared), new unresolved imports, and new strongly-connected cycles. Returns a heuristic regression_score (cap 10.0, thresholds: <1 clean, <5 concerning, >=5 regression). Read-only against both graphs.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["before_graph_path", "after_graph_path"],
+            "additionalProperties": false,
+            "properties": {
+                "before_graph_path": { "type": "string", "pattern": "^/.+" },
+                "after_graph_path":  { "type": "string", "pattern": "^/.+" },
+                "report_path":       { "type": "string", "pattern": "^/.+", "description": "Optional absolute path where the full report JSON is written. If absent, the report is returned inline only." }
             }
         }
     })

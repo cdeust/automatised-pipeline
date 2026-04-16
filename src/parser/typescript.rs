@@ -49,9 +49,11 @@ pub fn parse_typescript_file(source: &str, file_path: &str) -> Result<ParseResul
     parser
         .set_language(&lang)
         .map_err(|e| format!("failed to set TypeScript language: {e}"))?;
+    // source: H2 fix — 5 s per-file tree-sitter timeout (see super::PARSE_TIMEOUT_MICROS).
+    parser.set_timeout_micros(super::PARSE_TIMEOUT_MICROS);
     let tree = parser
         .parse(source, None)
-        .ok_or_else(|| "tree-sitter parse returned None".to_string())?;
+        .ok_or_else(|| "parse_timeout_or_none: tree-sitter returned None".to_string())?;
 
     let mut ctx = ExtractCtx {
         source,

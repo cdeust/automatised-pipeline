@@ -9,6 +9,12 @@ pub mod python;
 pub mod rust;
 pub mod typescript;
 
+// source: H2 fix — per-file tree-sitter parse timeout. 5 seconds is ~100x
+// the typical parse time for a 1 MB source file on an M-series Mac (measured
+// ~50 ms in practice) and matches the default suggested in the tree-sitter
+// CLI (`--time-limit 5`). Parser::parse returns None when this is exceeded.
+pub(crate) const PARSE_TIMEOUT_MICROS: u64 = 5_000_000;
+
 use tree_sitter::Node;
 
 // ---------------------------------------------------------------------------

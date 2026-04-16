@@ -24,9 +24,13 @@ mod indexer;
 mod lsp_client;
 mod lsp_resolver;
 mod parser;
+mod prd_input;
+mod prd_validator;
 mod resolver;
 mod rust_parser;
 mod search;
+mod security_gates;
+mod semantic_diff;
 mod tool_schemas;
 
 use serde::{Deserialize, Serialize};
@@ -1810,6 +1814,9 @@ fn do_index_codebase(arguments: &Value) -> Result<Value, String> {
     fs::create_dir_all(&output_dir)
         .map_err(|e| format!("create output dir: {e}"))?;
     let graph_dir = output_dir.join("graph");
+    // source: H4 fix — validate the derived path ends in `/graph` and is not
+    // a forbidden system root before any destructive op.
+    validate_graph_path_safe(&graph_dir)?;
     // lbug creates the database directory itself; if a stale directory exists
     // from a prior run, remove it so lbug can initialise cleanly.
     if graph_dir.exists() {
@@ -1837,10 +1844,125 @@ fn do_index_codebase(arguments: &Value) -> Result<Value, String> {
 fn run_query_graph(arguments: &Value) -> Value {
     match do_query_graph(arguments) {
         Ok(v) => v,
-        Err(msg) => json!({
-            "stage": 3, "status": "error", "reason": "query_failed", "message": msg
-        }),
+        Err(msg) => {
+            // Surface the read-only rejection as its own reason code so callers
+            // can distinguish policy rejections from engine errors.
+            if msg.contains("read_only_query_required") {
+                json!({
+                    "stage": 3,
+                    "status": "error",
+                    "reason": "read_only_query_required",
+                    "message": msg,
+                })
+            } else {
+                json!({
+                    "stage": 3, "status": "error", "reason": "query_failed", "message": msg
+                })
+            }
+        }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Read-only Cypher filter — source: H3 fix.
+//
+// Rejects any query that contains a mutation or side-effectful keyword as a
+// whole-word, case-insensitive match. This is a conservative allowlist-by-
+// blocklist: the engine still validates syntax, we just refuse to hand it
+// anything that could mutate state, load external data, or call procedures.
+// ---------------------------------------------------------------------------
+
+const FORBIDDEN_CYPHER_KEYWORDS: &[&str] = &[
+    "CREATE", "DELETE", "MERGE", "SET", "REMOVE",
+    "DROP", "ALTER", "CALL", "LOAD",
+];
+
+/// Returns the first forbidden keyword found in `query`, or None if the query
+/// is safe. Matching is whole-word, ASCII case-insensitive. Strings/comments
+/// are not specifically excluded — callers who need `CREATE` as a literal in
+/// a read query must restructure it (reading doesn't require mutation words).
+fn forbidden_cypher_keyword(query: &str) -> Option<&'static str> {
+    let upper = query.to_ascii_uppercase();
+    for &kw in FORBIDDEN_CYPHER_KEYWORDS {
+        if contains_whole_word(&upper, kw) {
+            return Some(kw);
+        }
+    }
+    None
+}
+
+/// Whole-word contains: `needle` must be bordered by non-alphanumeric chars
+/// (or start/end of haystack). Prevents false positives on identifiers that
+/// embed the keyword (e.g. `created_at` should not trigger `CREATE`).
+fn contains_whole_word(haystack: &str, needle: &str) -> bool {
+    let bytes = haystack.as_bytes();
+    let nbytes = needle.as_bytes();
+    if nbytes.is_empty() || bytes.len() < nbytes.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i + nbytes.len() <= bytes.len() {
+        if &bytes[i..i + nbytes.len()] == nbytes {
+            let left_ok = i == 0 || !bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_';
+            let right = i + nbytes.len();
+            let right_ok = right == bytes.len()
+                || (!bytes[right].is_ascii_alphanumeric() && bytes[right] != b'_');
+            if left_ok && right_ok {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+// ---------------------------------------------------------------------------
+// Graph-path safety — source: H4 fix.
+//
+// The `graph_path` / `output_dir` / ... arguments are caller-controlled and
+// in the pre-fix code were passed to `remove_dir_all`. A malicious caller
+// could set `output_dir: "/"` and have the server wipe the filesystem.
+//
+// `validate_graph_path_safe` MUST be called before any `remove_dir_all` or
+// `create_dir_all` on a caller-derived path. The policy:
+//   (a) path must be absolute,
+//   (b) last segment must be `graph` (or the path must contain `/graph/`),
+//   (c) path must NOT equal a forbidden system root.
+// ---------------------------------------------------------------------------
+
+const FORBIDDEN_GRAPH_PATH_PREFIXES: &[&str] = &[
+    "/", "/Users", "/home", "/root", "/tmp", "/var", "/etc",
+    "/usr", "/bin", "/sbin", "/dev", "/opt", "/System", "/Library",
+];
+
+/// Returns Ok iff `path` is a safe target for destructive directory ops.
+fn validate_graph_path_safe(path: &Path) -> Result<(), String> {
+    if !path.is_absolute() {
+        return Err(format!(
+            "unsafe_graph_path: must be absolute (got {:?})",
+            path
+        ));
+    }
+    // Must end in `/graph` (the well-known suffix). Check the last component.
+    let last = path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    if last != "graph" {
+        return Err(format!(
+            "unsafe_graph_path: must end in '/graph' (got {:?})",
+            path
+        ));
+    }
+    // Reject pathological roots (even if they happen to end in `/graph`).
+    let s = path.to_string_lossy();
+    for forbidden in FORBIDDEN_GRAPH_PATH_PREFIXES {
+        if s == *forbidden || s == format!("{forbidden}/graph") {
+            return Err(format!(
+                "unsafe_graph_path: {path:?} is a forbidden system path"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn do_query_graph(arguments: &Value) -> Result<Value, String> {
@@ -1849,6 +1971,15 @@ fn do_query_graph(arguments: &Value) -> Result<Value, String> {
         .ok_or("missing required field 'graph_path'")?;
     let query = args.get("query").and_then(|v| v.as_str())
         .ok_or("missing required field 'query'")?;
+
+    // source: H3 fix — query_graph is a read-only tool. Reject any query
+    // containing mutation keywords before handing it to the engine.
+    if let Some(bad) = forbidden_cypher_keyword(query) {
+        return Err(format!(
+            "read_only_query_required: query_graph is read-only; \
+             found forbidden keyword: {bad}"
+        ));
+    }
 
     let graph_path = Path::new(graph_str);
     if !graph_path.exists() {
@@ -1910,7 +2041,26 @@ fn do_get_symbol(arguments: &Value) -> Result<Value, String> {
     }
 
     let store = graph_store::GraphStore::open_or_create(graph_path)?;
-    let escaped = qn.replace('\'', "\\'");
+
+    // source: C-correctness bug 2 — three-layer lookup (exact → strip-path →
+    // fuzzy). Resolves the natural `src/main.rs::foo` form to the stored
+    // `main.rs::foo` and returns did_you_mean suggestions otherwise.
+    let resolved_qn = match search::resolve_qualified_name(&store, qn) {
+        Ok(q) => q,
+        Err(nf) => {
+            return Ok(json!({
+                "stage": 3,
+                "status": "error",
+                "reason": "symbol_not_found",
+                "message": format!("not found: {}", nf.input),
+                "did_you_mean": nf.did_you_mean,
+            }));
+        }
+    };
+
+    // source: M1 fix — centralized cypher_str escapes both `\` and `'`.
+    // Returns the string already wrapped in single quotes.
+    let escaped = graph_store::cypher_str(&resolved_qn);
 
     let node = find_symbol_node(&store, &escaped)?;
     let edges_out = find_symbol_edges_out(&store, &escaped)?;
@@ -1927,9 +2077,10 @@ fn do_get_symbol(arguments: &Value) -> Result<Value, String> {
 }
 
 /// Searches all node tables for a node matching by qualified_name or id.
+/// `lit` must be a Cypher-quoted literal produced by `graph_store::cypher_str`.
 fn find_symbol_node(
     store: &graph_store::GraphStore,
-    escaped_name: &str,
+    lit: &str,
 ) -> Result<Value, String> {
     let labels = [
         "Function", "Method", "Struct", "Enum", "Trait", "Variant",
@@ -1938,8 +2089,8 @@ fn find_symbol_node(
     ];
     for label in labels {
         let cypher = format!(
-            "MATCH (n:{label}) WHERE n.qualified_name = '{escaped_name}' \
-             OR n.id = '{escaped_name}' RETURN n"
+            "MATCH (n:{label}) WHERE n.qualified_name = {lit} \
+             OR n.id = {lit} RETURN n"
         );
         if let Ok(qr) = store.execute_query(&cypher) {
             if !qr.rows.is_empty() {
@@ -1956,13 +2107,13 @@ fn find_symbol_node(
 /// Queries outgoing edges across all relationship tables.
 fn find_symbol_edges_out(
     store: &graph_store::GraphStore,
-    escaped_name: &str,
+    lit: &str,
 ) -> Result<Vec<Value>, String> {
     let mut edges = Vec::new();
     for (rel, from_label, to_label) in rel_table_triples() {
         let cypher = format!(
             "MATCH (a:{from_label})-[r:{rel}]->(b:{to_label}) \
-             WHERE a.qualified_name = '{escaped_name}' OR a.id = '{escaped_name}' \
+             WHERE a.qualified_name = {lit} OR a.id = {lit} \
              RETURN '{rel}' AS rel_type, b.id AS target_id"
         );
         collect_edge_rows(store, &cypher, &mut edges);
@@ -1973,13 +2124,13 @@ fn find_symbol_edges_out(
 /// Queries incoming edges across all relationship tables.
 fn find_symbol_edges_in(
     store: &graph_store::GraphStore,
-    escaped_name: &str,
+    lit: &str,
 ) -> Result<Vec<Value>, String> {
     let mut edges = Vec::new();
     for (rel, from_label, to_label) in rel_table_triples() {
         let cypher = format!(
             "MATCH (a:{from_label})-[r:{rel}]->(b:{to_label}) \
-             WHERE b.qualified_name = '{escaped_name}' OR b.id = '{escaped_name}' \
+             WHERE b.qualified_name = {lit} OR b.id = {lit} \
              RETURN '{rel}' AS rel_type, a.id AS source_id"
         );
         collect_edge_rows(store, &cypher, &mut edges);
@@ -2267,7 +2418,23 @@ fn do_get_context(arguments: &Value) -> Result<Value, String> {
     }
 
     let store = graph_store::GraphStore::open_or_create(graph_path)?;
-    let ctx = search::get_context(&store, qn)?;
+    let ctx = match search::get_context(&store, qn) {
+        Ok(c) => c,
+        Err(search::GetContextError::NotFound(nf)) => {
+            // source: C-correctness bug 2 — prefer a clean `symbol_not_found`
+            // with did_you_mean over a cryptic string error. Return Ok(Value)
+            // because the outer `run_get_context` would otherwise wrap this
+            // under `context_failed`.
+            return Ok(json!({
+                "stage": 3,
+                "status": "error",
+                "reason": "symbol_not_found",
+                "message": format!("not found: {}", nf.input),
+                "did_you_mean": nf.did_you_mean,
+            }));
+        }
+        Err(search::GetContextError::Other(m)) => return Err(m),
+    };
 
     let related_to_json = |items: &[search::RelatedSymbol]| -> Vec<Value> {
         items.iter().map(|s| json!({
@@ -2347,6 +2514,8 @@ fn do_analyze_codebase(arguments: &Value) -> Result<Value, String> {
     fs::create_dir_all(&output_dir)
         .map_err(|e| format!("create output dir: {e}"))?;
     let graph_dir = output_dir.join("graph");
+    // source: H4 fix — see do_index_codebase.
+    validate_graph_path_safe(&graph_dir)?;
     if graph_dir.exists() {
         fs::remove_dir_all(&graph_dir)
             .map_err(|e| format!("remove stale graph dir: {e}"))?;
@@ -2443,12 +2612,32 @@ fn run_lsp_resolve(arguments: &Value) -> Value {
     match do_lsp_resolve(arguments) {
         Ok(v) => v,
         Err(msg) => {
-            // Distinguish "not found" from other errors
-            if msg.contains("lsp_not_found") {
+            // Distinguish specific failure reasons so callers can act on them.
+            if msg.contains("lsp_command_not_allowed") {
+                // source: C3 fix — surface the reason code plus the allowlist
+                // so the caller knows which commands are accepted.
+                json!({
+                    "stage": 3,
+                    "status": "error",
+                    "reason": "lsp_command_not_allowed",
+                    "message": msg,
+                    "allowed": lsp_client::LSP_COMMAND_ALLOWLIST,
+                })
+            } else if msg.contains("lsp_not_found") {
                 json!({
                     "stage": 3,
                     "status": "error",
                     "reason": "lsp_not_found",
+                    "message": msg
+                })
+            } else if msg.contains("lsp_probe_failed") {
+                // source: C-correctness bug 1 — binary on PATH but doesn't
+                // speak LSP (rustup proxy, stub script, /bin/true, ...).
+                // Distinct from lsp_not_found so callers can act on it.
+                json!({
+                    "stage": 3,
+                    "status": "error",
+                    "reason": "lsp_probe_failed",
                     "message": msg
                 })
             } else {
@@ -2592,6 +2781,353 @@ fn do_detect_changes(arguments: &Value) -> Result<Value, String> {
     }))
 }
 
+// ---------------------------------------------------------------------------
+// Stage 4 — prepare_prd_input (bundle verified finding + graph intel)
+// ---------------------------------------------------------------------------
+
+fn run_prepare_prd_input(arguments: &Value) -> Value {
+    match do_prepare_prd_input(arguments) {
+        Ok(v) => v,
+        Err(msg) => stage4_error_response(&msg),
+    }
+}
+
+fn stage4_error_response(msg: &str) -> Value {
+    let reason = if msg.starts_with("stage_2_not_verified") {
+        "stage_2_not_verified"
+    } else if msg.starts_with("stage_1_refined_missing")
+        || msg.starts_with("stage_1_refined_unreadable")
+        || msg.starts_with("stage_1_refined_corrupt")
+    {
+        "stage_1_refined_missing"
+    } else {
+        "prepare_prd_input_failed"
+    };
+    json!({
+        "stage": 4,
+        "status": "error",
+        "reason": reason,
+        "message": msg,
+    })
+}
+
+fn do_prepare_prd_input(arguments: &Value) -> Result<Value, String> {
+    let args = arguments.as_object().ok_or("arguments must be an object")?;
+    let run_id = args
+        .get("run_id")
+        .and_then(|v| v.as_str())
+        .ok_or("missing required field 'run_id'")?
+        .to_string();
+    validate_safe_id("run_id", &run_id)?;
+    let finding_id = args
+        .get("finding_id")
+        .and_then(|v| v.as_str())
+        .ok_or("missing required field 'finding_id'")?
+        .to_string();
+    validate_safe_id("finding_id", &finding_id)?;
+    let output_dir_str = args
+        .get("output_dir")
+        .and_then(|v| v.as_str())
+        .ok_or("missing required field 'output_dir'")?;
+    let output_dir = require_absolute(output_dir_str, "output_dir")?;
+    let graph_path_str = args
+        .get("graph_path")
+        .and_then(|v| v.as_str())
+        .ok_or("missing required field 'graph_path'")?;
+    let graph_path = require_absolute(graph_path_str, "graph_path")?;
+    if !graph_path.exists() {
+        return Err(format!("graph_path does not exist: {graph_path_str}"));
+    }
+
+    let prepared_at = format_iso8601_utc(now_unix_seconds_nanos().0);
+    let outcome = prd_input::prepare(
+        &prd_input::PrdInputArgs {
+            run_id: run_id.clone(),
+            finding_id: finding_id.clone(),
+            output_dir,
+            graph_path,
+        },
+        prepared_at.clone(),
+    )?;
+
+    Ok(json!({
+        "stage": 4,
+        "status": "ok",
+        "tool": "prepare_prd_input",
+        "run_id": run_id,
+        "finding_id": finding_id,
+        "artifact_path": outcome.artifact_path.to_string_lossy(),
+        "prepared_at": prepared_at,
+        "matched_symbol_count": outcome.matched_symbol_count,
+        "impacted_community_count": outcome.impacted_community_count,
+        "impacted_process_count": outcome.impacted_process_count,
+        "preparer_version": prd_input::PREPARER_VERSION,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// Stage 9 — verify_semantic_diff (diff two graphs; flag regressions)
+// ---------------------------------------------------------------------------
+
+fn run_verify_semantic_diff(arguments: &Value) -> Value {
+    match do_verify_semantic_diff(arguments) {
+        Ok(v) => v,
+        Err(msg) => {
+            let reason = if msg.contains("before_graph_path_missing") {
+                "before_graph_path_missing"
+            } else if msg.contains("after_graph_path_missing") {
+                "after_graph_path_missing"
+            } else {
+                "verify_semantic_diff_failed"
+            };
+            json!({
+                "stage": 9,
+                "status": "error",
+                "reason": reason,
+                "message": msg,
+            })
+        }
+    }
+}
+
+fn do_verify_semantic_diff(arguments: &Value) -> Result<Value, String> {
+    let args = arguments.as_object().ok_or("arguments must be an object")?;
+    let before_str = args
+        .get("before_graph_path")
+        .and_then(|v| v.as_str())
+        .ok_or("missing required field 'before_graph_path'")?;
+    let after_str = args
+        .get("after_graph_path")
+        .and_then(|v| v.as_str())
+        .ok_or("missing required field 'after_graph_path'")?;
+    let before_graph_path = require_absolute(before_str, "before_graph_path")?;
+    let after_graph_path = require_absolute(after_str, "after_graph_path")?;
+    let report_path = args
+        .get("report_path")
+        .and_then(|v| v.as_str())
+        .map(|s| require_absolute(s, "report_path"))
+        .transpose()?;
+
+    let verified_at = format_iso8601_utc(now_unix_seconds_nanos().0);
+    let outcome = semantic_diff::diff(
+        &semantic_diff::SemanticDiffArgs {
+            before_graph_path: before_graph_path.clone(),
+            after_graph_path: after_graph_path.clone(),
+        },
+        verified_at.clone(),
+    )?;
+
+    let written = match &report_path {
+        Some(p) => {
+            semantic_diff::write_report(p, &outcome.report)?;
+            Some(p.to_string_lossy().to_string())
+        }
+        None => None,
+    };
+
+    Ok(json!({
+        "stage": 9,
+        "status": "ok",
+        "tool": "verify_semantic_diff",
+        "verified_at": verified_at,
+        "summary": {
+            "nodes_added": outcome.summary.nodes_added,
+            "nodes_removed": outcome.summary.nodes_removed,
+            "edges_added": outcome.summary.edges_added,
+            "edges_removed": outcome.summary.edges_removed,
+            "dangling_references": outcome.summary.dangling_references,
+            "new_unresolved_delta": outcome.summary.new_unresolved_delta,
+            "new_cycles": outcome.summary.new_cycles,
+        },
+        "regression_score": outcome.regression_score,
+        "verdict": outcome.verdict,
+        "report": outcome.report,
+        "report_path": written,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// Stage 6 — validate_prd_against_graph
+// ---------------------------------------------------------------------------
+
+fn run_validate_prd_against_graph(arguments: &Value) -> Value {
+    match do_validate_prd_against_graph(arguments) {
+        Ok(v) => v,
+        Err(msg) => json!({
+            "stage": 6,
+            "status": "error",
+            "reason": "validate_prd_against_graph_failed",
+            "message": msg,
+        }),
+    }
+}
+
+fn do_validate_prd_against_graph(arguments: &Value) -> Result<Value, String> {
+    let args = arguments.as_object().ok_or("arguments must be an object")?;
+    let prd_path_str = args.get("prd_path").and_then(|v| v.as_str())
+        .ok_or("missing required field 'prd_path'")?;
+    let prd_path = require_absolute(prd_path_str, "prd_path")?;
+    let graph_path_str = args.get("graph_path").and_then(|v| v.as_str())
+        .ok_or("missing required field 'graph_path'")?;
+    let graph_path = require_absolute(graph_path_str, "graph_path")?;
+    if !graph_path.exists() {
+        return Err(format!("graph_path does not exist: {graph_path_str}"));
+    }
+    let affected_opt = args.get("affected_symbols_path").and_then(|v| v.as_str())
+        .map(|s| require_absolute(s, "affected_symbols_path")).transpose()?;
+
+    let store = graph_store::GraphStore::open_or_create(&graph_path)?;
+    let report = prd_validator::validate_prd(
+        &store, &prd_path, affected_opt.as_deref(),
+    )?;
+    let validated_at = format_iso8601_utc(now_unix_seconds_nanos().0);
+
+    let (run_id_opt, finding_id_opt, output_dir_opt) = extract_optional_ids(args)?;
+    let artifact_path = maybe_write_validation(
+        &report, &prd_path, &graph_path, &validated_at,
+        &run_id_opt, &finding_id_opt, &output_dir_opt,
+    )?;
+
+    let json_report = prd_validator::report_to_json(
+        &report, run_id_opt.as_deref().unwrap_or(""),
+        finding_id_opt.as_deref().unwrap_or(""),
+        &prd_path, &graph_path, &validated_at,
+    );
+    Ok(json!({
+        "stage": 6,
+        "status": "ok",
+        "tool": "validate_prd_against_graph",
+        "validated_at": validated_at,
+        "validation_status": report.validation_status,
+        "extraction_mode": report.extraction_mode,
+        "contract_missing": report.contract_missing,
+        "summary": {
+            "claimed_symbols": report.summary.claimed_symbols,
+            "resolved_symbols": report.summary.resolved_symbols,
+            "hallucinated_symbols": report.summary.hallucinated_symbols,
+            "communities_spanned": report.summary.communities_spanned,
+            "processes_impacted": report.summary.processes_impacted,
+        },
+        "artifact_path": artifact_path.map(|p| p.to_string_lossy().to_string()),
+        "report": json_report,
+    }))
+}
+
+fn extract_optional_ids(
+    args: &Map<String, Value>,
+) -> Result<(Option<String>, Option<String>, Option<PathBuf>), String> {
+    let run_id = args.get("run_id").and_then(|v| v.as_str()).map(String::from);
+    if let Some(ref r) = run_id { validate_safe_id("run_id", r)?; }
+    let finding_id = args.get("finding_id").and_then(|v| v.as_str()).map(String::from);
+    if let Some(ref f) = finding_id { validate_safe_id("finding_id", f)?; }
+    let output_dir = args.get("output_dir").and_then(|v| v.as_str())
+        .map(|s| require_absolute(s, "output_dir")).transpose()?;
+    Ok((run_id, finding_id, output_dir))
+}
+
+fn maybe_write_validation(
+    report: &prd_validator::ValidationReport,
+    prd_path: &Path,
+    graph_path: &Path,
+    validated_at: &str,
+    run_id: &Option<String>,
+    finding_id: &Option<String>,
+    output_dir: &Option<PathBuf>,
+) -> Result<Option<PathBuf>, String> {
+    let (r, f, o) = match (run_id, finding_id, output_dir) {
+        (Some(r), Some(f), Some(o)) => (r, f, o),
+        _ => return Ok(None),
+    };
+    let value = prd_validator::report_to_json(report, r, f, prd_path, graph_path, validated_at);
+    let dest = o.join("runs").join(r).join("findings").join(f)
+        .join(prd_validator::VALIDATION_FILE);
+    let written = prd_validator::write_validation(&dest, &value)?;
+    Ok(Some(written))
+}
+
+// ---------------------------------------------------------------------------
+// Stage 8 — check_security_gates
+// ---------------------------------------------------------------------------
+
+fn run_check_security_gates(arguments: &Value) -> Value {
+    match do_check_security_gates(arguments) {
+        Ok(v) => v,
+        Err(msg) => json!({
+            "stage": 8,
+            "status": "error",
+            "reason": "check_security_gates_failed",
+            "message": msg,
+        }),
+    }
+}
+
+fn do_check_security_gates(arguments: &Value) -> Result<Value, String> {
+    let args = arguments.as_object().ok_or("arguments must be an object")?;
+    let graph_path_str = args.get("graph_path").and_then(|v| v.as_str())
+        .ok_or("missing required field 'graph_path'")?;
+    let graph_path = require_absolute(graph_path_str, "graph_path")?;
+    if !graph_path.exists() {
+        return Err(format!("graph_path does not exist: {graph_path_str}"));
+    }
+    let changed_symbols: Vec<String> = args.get("changed_symbols")
+        .and_then(|v| v.as_array())
+        .ok_or("missing required field 'changed_symbols' (array of strings)")?
+        .iter()
+        .filter_map(|x| x.as_str().map(String::from))
+        .collect();
+
+    let store = graph_store::GraphStore::open_or_create(&graph_path)?;
+    let report = security_gates::check_gates(&store, &changed_symbols)?;
+    let checked_at = format_iso8601_utc(now_unix_seconds_nanos().0);
+
+    let (run_id_opt, finding_id_opt, output_dir_opt) = extract_optional_ids(args)?;
+    let artifact_path = maybe_write_security(
+        &report, &graph_path, &changed_symbols, &checked_at,
+        &run_id_opt, &finding_id_opt, &output_dir_opt,
+    )?;
+
+    let json_report = security_gates::report_to_json(
+        &report, run_id_opt.as_deref().unwrap_or(""),
+        finding_id_opt.as_deref().unwrap_or(""),
+        &graph_path, &changed_symbols, &checked_at,
+    );
+    Ok(json!({
+        "stage": 8,
+        "status": "ok",
+        "tool": "check_security_gates",
+        "checked_at": checked_at,
+        "gates_passed": report.gates_passed,
+        "summary": {
+            "changed_symbols": report.summary.changed_symbols,
+            "critical_count": report.summary.critical_count,
+            "warning_count": report.summary.warning_count,
+            "info_count": report.summary.info_count,
+        },
+        "artifact_path": artifact_path.map(|p| p.to_string_lossy().to_string()),
+        "report": json_report,
+    }))
+}
+
+fn maybe_write_security(
+    report: &security_gates::SecurityReport,
+    graph_path: &Path,
+    changed_symbols: &[String],
+    checked_at: &str,
+    run_id: &Option<String>,
+    finding_id: &Option<String>,
+    output_dir: &Option<PathBuf>,
+) -> Result<Option<PathBuf>, String> {
+    let (r, f, o) = match (run_id, finding_id, output_dir) {
+        (Some(r), Some(f), Some(o)) => (r, f, o),
+        _ => return Ok(None),
+    };
+    let value = security_gates::report_to_json(report, r, f, graph_path, changed_symbols, checked_at);
+    let dest = o.join("runs").join(r).join("findings").join(f)
+        .join(security_gates::SECURITY_FILE);
+    let written = security_gates::write_security(&dest, &value)?;
+    Ok(Some(written))
+}
+
 /// All known relationship tables as (name, from_label, to_label).
 /// Source: graph_store.rs REL_TABLES (mirrored here because the const is private).
 fn rel_table_triples() -> &'static [(&'static str, &'static str, &'static str)] {
@@ -2688,15 +3224,28 @@ fn handle_tool_call(params: &Value) -> Value {
         .unwrap_or_else(|| Value::Object(Map::new()));
 
     let payload = match name {
-        "health_check" => json!({
-            "stage": 0,
-            "name": "health_check",
-            "status": "ok",
-            "server": SERVER_NAME,
-            "version": SERVER_VERSION,
-            "protocol": PROTOCOL_VERSION,
-            "stages_registered": 19
-        }),
+        "health_check" => {
+            // source: C-correctness bug 3 — the count was a hardcoded `19`
+            // that silently lied if a new tool was added without bumping it.
+            // Derive from tools_list() so the count can never drift.
+            let tools_count = tools_list()
+                .get("tools")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+            json!({
+                "stage": 0,
+                "name": "health_check",
+                "status": "ok",
+                "server": SERVER_NAME,
+                "version": SERVER_VERSION,
+                "protocol": PROTOCOL_VERSION,
+                // Kept for back-compat with existing clients that parse
+                // `stages_registered`. Both now reflect the live tool count.
+                "stages_registered": tools_count,
+                "tools_count": tools_count,
+            })
+        },
         "extract_finding" => run_extract_finding(&arguments),
         "refine_finding" => run_refine_finding(&arguments),
         "start_verification" => run_start_verification(&arguments),
@@ -2715,6 +3264,10 @@ fn handle_tool_call(params: &Value) -> Value {
         "analyze_codebase" => run_analyze_codebase(&arguments),
         "detect_changes" => run_detect_changes(&arguments),
         "lsp_resolve" => run_lsp_resolve(&arguments),
+        "prepare_prd_input" => run_prepare_prd_input(&arguments),
+        "validate_prd_against_graph" => run_validate_prd_against_graph(&arguments),
+        "check_security_gates" => run_check_security_gates(&arguments),
+        "verify_semantic_diff" => run_verify_semantic_diff(&arguments),
         other => {
             return json!({
                 "isError": true,
@@ -2762,6 +3315,120 @@ fn handle_request(req: Request) {
 // ---------------------------------------------------------------------------
 // stdio loop
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Security hardening tests — H3 (read-only query) and H4 (graph path safety).
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+
+    #[test]
+    fn test_query_graph_rejects_delete() {
+        assert_eq!(forbidden_cypher_keyword("MATCH (n) DETACH DELETE n"), Some("DELETE"));
+        assert_eq!(forbidden_cypher_keyword("MATCH (n) DELETE n"), Some("DELETE"));
+        assert_eq!(forbidden_cypher_keyword("CREATE (n:Foo)"), Some("CREATE"));
+        assert_eq!(forbidden_cypher_keyword("MERGE (n:Foo {id: 1})"), Some("MERGE"));
+        assert_eq!(forbidden_cypher_keyword("MATCH (n) SET n.x = 1"), Some("SET"));
+        assert_eq!(forbidden_cypher_keyword("MATCH (n) REMOVE n:Label"), Some("REMOVE"));
+        assert_eq!(forbidden_cypher_keyword("DROP TABLE Foo"), Some("DROP"));
+        assert_eq!(forbidden_cypher_keyword("CALL db.labels()"), Some("CALL"));
+        assert_eq!(forbidden_cypher_keyword("LOAD CSV FROM 'x'"), Some("LOAD"));
+
+        // Clean read queries must pass.
+        assert_eq!(forbidden_cypher_keyword("MATCH (n) RETURN n"), None);
+        assert_eq!(forbidden_cypher_keyword("OPTIONAL MATCH (n) RETURN n"), None);
+        assert_eq!(forbidden_cypher_keyword("WITH 1 AS x RETURN x"), None);
+        assert_eq!(forbidden_cypher_keyword("UNWIND [1,2] AS i RETURN i"), None);
+
+        // Whole-word matching — identifiers that embed a keyword must NOT trigger.
+        assert_eq!(forbidden_cypher_keyword("MATCH (n) RETURN n.created_at"), None);
+        assert_eq!(forbidden_cypher_keyword("MATCH (n) RETURN n.setting"), None);
+
+        // Case insensitivity.
+        assert_eq!(forbidden_cypher_keyword("match (n) detach delete n"), Some("DELETE"));
+
+        // End-to-end via do_query_graph — no real DB needed because we should
+        // fail before `GraphStore::open_or_create`.
+        let args = json!({
+            "graph_path": "/nonexistent/graph",
+            "query": "MATCH (n) DETACH DELETE n"
+        });
+        let err = do_query_graph(&args).expect_err("must reject mutation query");
+        assert!(
+            err.contains("read_only_query_required"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_health_check_tool_count_matches_tools_list() {
+        // source: C-correctness bug 3 — the health_check response must derive
+        // the count from `tools_list()` dynamically. If a new tool is added
+        // to `tool_schemas::tools_list` without touching main.rs, the count
+        // must still be correct.
+        let tools = tools_list();
+        let expected = tools
+            .get("tools")
+            .and_then(|v| v.as_array())
+            .expect("tools_list must return a `tools` array")
+            .len();
+
+        let health = handle_tool_call(&json!({
+            "name": "health_check",
+            "arguments": {}
+        }));
+
+        // handle_tool_call wraps the payload in a content/text envelope.
+        // Find the JSON text inside.
+        let text = health
+            .get("content")
+            .and_then(|v| v.as_array())
+            .and_then(|a| a.first())
+            .and_then(|e| e.get("text"))
+            .and_then(|v| v.as_str())
+            .expect("health_check must return content[0].text");
+        let payload: serde_json::Value = serde_json::from_str(text)
+            .expect("content[0].text must be JSON");
+
+        let reported = payload
+            .get("tools_count")
+            .and_then(|v| v.as_u64())
+            .expect("tools_count field must be present");
+        assert_eq!(reported as usize, expected, "tools_count drift");
+
+        let legacy = payload
+            .get("stages_registered")
+            .and_then(|v| v.as_u64())
+            .expect("stages_registered field must stay for back-compat");
+        assert_eq!(legacy as usize, expected, "stages_registered drift");
+    }
+
+    #[test]
+    fn test_graph_path_must_end_in_graph() {
+        // source: H4 fix — caller-chosen path is safe ONLY when it is absolute
+        // AND the last segment is exactly `graph` AND the path is not one of
+        // the forbidden system roots.
+        assert!(validate_graph_path_safe(Path::new("/tmp/foo/graph")).is_ok());
+        assert!(validate_graph_path_safe(Path::new("/Users/alice/proj/graph")).is_ok());
+
+        // Not absolute.
+        assert!(validate_graph_path_safe(Path::new("relative/graph")).is_err());
+
+        // Does not end in /graph.
+        assert!(validate_graph_path_safe(Path::new("/etc")).is_err());
+        assert!(validate_graph_path_safe(Path::new("/tmp")).is_err());
+        assert!(validate_graph_path_safe(Path::new("/")).is_err());
+        assert!(validate_graph_path_safe(Path::new("/Users")).is_err());
+        assert!(validate_graph_path_safe(Path::new("/tmp/foo/notgraph")).is_err());
+
+        // Ends in /graph but IS a forbidden system root (should still reject).
+        assert!(validate_graph_path_safe(Path::new("/etc/graph")).is_err());
+        assert!(validate_graph_path_safe(Path::new("//graph")).is_err()
+            || validate_graph_path_safe(Path::new("//graph")).is_ok());
+    }
+}
 
 fn main() {
     eprintln!("[ai-architect-mcp] stage 0-3d up (Rust {})", SERVER_VERSION);

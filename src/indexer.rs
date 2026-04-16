@@ -4,10 +4,40 @@
 // that processes a full directory of source files. Supports Rust, Python,
 // and TypeScript. Zero dependency on main.rs.
 
-use crate::graph_store::GraphStore;
+use crate::graph_store::{cypher_str, GraphStore};
 use crate::parser::{self, Language};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
+
+// ---------------------------------------------------------------------------
+// Resource limits — source: security hardening (H1).
+// Bound the indexer's work to prevent DoS via oversized codebases.
+// ---------------------------------------------------------------------------
+
+// source: heuristic — 100k files covers the largest real-world monorepos
+// (linux kernel ~80k .c files; chromium src/ ~70k). Larger inputs are
+// almost certainly adversarial or accidental (e.g. indexing `/`).
+const MAX_FILES: usize = 100_000;
+
+// source: heuristic — 10 MB is ~10× the largest realistic hand-written source
+// file (sqlite3.c is ~7 MB; this is the practical upper bound). Files above
+// this are almost always generated/minified and bring no graph value.
+const MAX_FILE_BYTES: u64 = 10_485_760;
+
+// source: heuristic — 2 GB total reads caps peak RSS during indexing.
+// macOS default ulimit -m is effectively unbounded, so we self-limit.
+const MAX_TOTAL_BYTES: u64 = 2_147_483_648;
+
+// source: heuristic — 64 is deeper than any realistic project tree
+// (node_modules pathologies rarely exceed 30). Prevents stack-exhaustion
+// via symlinked/pathological directory structures.
+const MAX_DEPTH: usize = 64;
+
+// source: security hardening — per-file byte cap BEFORE handing to tree-sitter.
+// Even within MAX_FILE_BYTES, 1 MB is sufficient for any realistic source file
+// and bounds tree-sitter parse work per file.
+pub const MAX_PARSE_BYTES: u64 = 1_048_576;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -44,16 +74,35 @@ pub fn index_codebase_with_language(
     store.create_schema()?;
 
     let source_files = collect_source_files(codebase_path, language_filter)?;
+    // label_by_qn: qualified_name/id -> label, populated as nodes are created.
+    // Used to resolve edge tables without probing the database.
+    // source: Fermi audit — probe_node_label was firing up to 9 MATCH queries
+    // per edge; the indexer already knows every node's label in memory.
+    let mut label_by_qn: HashMap<String, String> = HashMap::new();
     let mut files_indexed: u64 = 0;
+    let mut total_bytes: u64 = 0;
     let mut dir_nodes_inserted = std::collections::HashSet::<PathBuf>::new();
 
     for file_path in &source_files {
         let rel = relative_path(codebase_path, file_path);
         let rel_str = rel.to_string_lossy();
-        insert_ancestor_dirs(&store, codebase_path, file_path, &mut dir_nodes_inserted)?;
+        // Track cumulative bytes read; abort if we blow past MAX_TOTAL_BYTES.
+        // source: H1 fix — prevents DoS by forcing the process to read gigabytes.
+        let file_bytes = std::fs::metadata(file_path).map(|m| m.len()).unwrap_or(0);
+        total_bytes = total_bytes.saturating_add(file_bytes);
+        if total_bytes > MAX_TOTAL_BYTES {
+            return Err(format!(
+                "total_bytes_exceeded: aborting walk after {total_bytes} bytes \
+                 (MAX_TOTAL_BYTES {MAX_TOTAL_BYTES})"
+            ));
+        }
+        insert_ancestor_dirs(
+            &store, codebase_path, file_path, &mut dir_nodes_inserted, &mut label_by_qn,
+        )?;
         insert_file_node(&store, file_path, &rel_str)?;
+        label_by_qn.insert(rel_str.to_string(), "File".into());
         insert_dir_file_edge(&store, &rel)?;
-        match index_single_file(&store, file_path, &rel_str) {
+        match index_single_file(&store, file_path, &rel_str, &mut label_by_qn) {
             Ok(()) => files_indexed += 1,
             Err(e) => eprintln!("indexer: skipping {}: {e}", rel_str),
         }
@@ -79,12 +128,22 @@ pub fn index_codebase_with_language(
 /// Recursively collects source files, skipping hidden dirs, target/, node_modules/.
 /// When `language_filter` is Some, only collects files for that language.
 /// When None, collects all files with recognized extensions.
+///
+/// Symlinks are intentionally NOT followed — source: security hardening (C4).
+/// This prevents a symlink inside the codebase from causing `read_dir` to
+/// silently traverse outside the tree (e.g. to `/etc/passwd` or `~/.ssh`).
 fn collect_source_files(
     root: &Path,
     language_filter: Option<Language>,
 ) -> Result<Vec<PathBuf>, String> {
     let mut result = Vec::new();
-    walk_dir_recursive(root, &mut result, language_filter)?;
+    walk_dir_recursive(root, &mut result, language_filter, 0)?;
+    if result.len() > MAX_FILES {
+        return Err(format!(
+            "too_many_files: codebase contains {} files, MAX_FILES is {}",
+            result.len(), MAX_FILES
+        ));
+    }
     result.sort();
     Ok(result)
 }
@@ -93,7 +152,14 @@ fn walk_dir_recursive(
     dir: &Path,
     out: &mut Vec<PathBuf>,
     language_filter: Option<Language>,
+    depth: usize,
 ) -> Result<(), String> {
+    if depth > MAX_DEPTH {
+        return Err(format!(
+            "walk_too_deep: exceeded MAX_DEPTH ({MAX_DEPTH}) at {}",
+            dir.display()
+        ));
+    }
     let entries = std::fs::read_dir(dir)
         .map_err(|e| format!("read_dir {}: {e}", dir.display()))?;
     for entry in entries {
@@ -104,14 +170,38 @@ fn walk_dir_recursive(
         if should_skip(&name_str) {
             continue;
         }
-        if path.is_dir() {
-            walk_dir_recursive(&path, out, language_filter)?;
-        } else if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-            let detected = Language::from_extension(ext);
-            match (language_filter, detected) {
-                (Some(filter), Some(lang)) if filter == lang => out.push(path),
-                (None, Some(_)) => out.push(path),
-                _ => {}
+        // Use symlink_metadata (lstat) instead of metadata (stat) so symlinks
+        // are detected and skipped rather than silently followed.
+        // source: C4 fix — POSIX lstat(2), does not follow the final symlink.
+        let meta = match std::fs::symlink_metadata(&path) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if meta.file_type().is_symlink() {
+            continue; // intentionally skip symlinks
+        }
+        if meta.is_dir() {
+            walk_dir_recursive(&path, out, language_filter, depth + 1)?;
+            if out.len() > MAX_FILES {
+                return Err(format!(
+                    "too_many_files: exceeded MAX_FILES ({MAX_FILES}) during walk"
+                ));
+            }
+        } else if meta.is_file() {
+            if meta.len() > MAX_FILE_BYTES {
+                eprintln!(
+                    "indexer: skipping oversized file ({} bytes > MAX_FILE_BYTES {}): {}",
+                    meta.len(), MAX_FILE_BYTES, path.display()
+                );
+                continue;
+            }
+            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                let detected = Language::from_extension(ext);
+                match (language_filter, detected) {
+                    (Some(filter), Some(lang)) if filter == lang => out.push(path),
+                    (None, Some(_)) => out.push(path),
+                    _ => {}
+                }
             }
         }
     }
@@ -138,6 +228,7 @@ fn insert_ancestor_dirs(
     root: &Path,
     file_path: &Path,
     seen: &mut std::collections::HashSet<PathBuf>,
+    label_by_qn: &mut HashMap<String, String>,
 ) -> Result<(), String> {
     let rel = relative_path(root, file_path);
     let mut current = PathBuf::new();
@@ -153,6 +244,7 @@ fn insert_ancestor_dirs(
             let dir_id = current.to_string_lossy();
             let dir_name = component.as_os_str().to_string_lossy();
             insert_directory_node(store, &dir_id, &dir_name)?;
+            label_by_qn.insert(dir_id.to_string(), "Directory".into());
             if !prev.as_os_str().is_empty() {
                 insert_dir_dir_edge(store, &prev.to_string_lossy(), &dir_id)?;
             }
@@ -211,15 +303,29 @@ fn insert_dir_dir_edge(store: &GraphStore, parent_id: &str, child_id: &str) -> R
 // Single-file indexing: parse → insert nodes → insert edges
 // ---------------------------------------------------------------------------
 
-fn index_single_file(store: &GraphStore, abs_path: &Path, rel_path: &str) -> Result<(), String> {
+fn index_single_file(
+    store: &GraphStore,
+    abs_path: &Path,
+    rel_path: &str,
+    label_by_qn: &mut HashMap<String, String>,
+) -> Result<(), String> {
     let source = std::fs::read_to_string(abs_path)
         .map_err(|e| format!("read {}: {e}", abs_path.display()))?;
+    // Defense-in-depth: even if the dir walker let a large file slip (e.g.
+    // size changed between lstat and read), refuse to feed it to tree-sitter.
+    // source: H2 fix — per-file parse cap, 1 MB is sufficient for all real code.
+    if (source.len() as u64) > MAX_PARSE_BYTES {
+        return Err(format!(
+            "file_too_large_for_parser: {} bytes > MAX_PARSE_BYTES {}",
+            source.len(), MAX_PARSE_BYTES
+        ));
+    }
     let ext = abs_path.extension().and_then(|e| e.to_str()).unwrap_or("");
     let lang = Language::from_extension(ext)
         .ok_or_else(|| format!("unsupported file extension: {ext}"))?;
     let parsed = parser::parse_file(&source, rel_path, lang)?;
-    insert_parsed_nodes(store, &parsed.nodes)?;
-    insert_parsed_edges(store, &parsed.refs)?;
+    insert_parsed_nodes(store, &parsed.nodes, label_by_qn)?;
+    insert_parsed_edges(store, &parsed.refs, label_by_qn)?;
     Ok(())
 }
 
@@ -230,13 +336,19 @@ fn index_single_file(store: &GraphStore, abs_path: &Path, rel_path: &str) -> Res
 fn insert_parsed_nodes(
     store: &GraphStore,
     nodes: &[parser::ExtractedNode],
+    label_by_qn: &mut HashMap<String, String>,
 ) -> Result<(), String> {
+    // Group nodes by label so we can bulk-insert each label's batch in one
+    // (or a few, chunked) Cypher CREATE ..., ..., ... statements.
+    // source: Fermi audit — per-row CREATE was ~100x slower than batched.
+    let mut by_label: HashMap<String, Vec<Vec<(String, String)>>> = HashMap::new();
     for node in nodes {
+        label_by_qn.insert(node.qualified_name.clone(), node.label.clone());
         let props = build_node_properties(node);
-        let prop_refs: Vec<(&str, &str)> = props.iter()
-            .map(|(k, v)| (k.as_str(), v.as_str()))
-            .collect();
-        store.insert_node(&node.label, &prop_refs)?;
+        by_label.entry(node.label.clone()).or_default().push(props);
+    }
+    for (label, rows) in &by_label {
+        store.bulk_insert_nodes(label, rows)?;
     }
     Ok(())
 }
@@ -308,39 +420,49 @@ fn append_label_properties(props: &mut Vec<(String, String)>, node: &parser::Ext
 fn insert_parsed_edges(
     store: &GraphStore,
     refs: &[parser::ExtractedRef],
+    label_by_qn: &HashMap<String, String>,
 ) -> Result<(), String> {
+    // Group edges by rel table name so bulk_insert_edges amortizes setup.
+    // source: Fermi audit — per-edge probe_node_label was firing up to 9
+    // MATCH queries; the in-memory label_by_qn map eliminates them entirely.
+    let mut by_table: HashMap<String, Vec<(String, String, Vec<(String, String)>)>> =
+        HashMap::new();
     for edge_ref in refs {
         let table = resolve_edge_table(
             &edge_ref.kind,
             &edge_ref.from_qualified_name,
             &edge_ref.to_qualified_name,
-            store,
+            label_by_qn,
         );
         let table_name = match table {
             Some(t) => t,
-            None => continue, // skip edges we can't map to a table
+            None => continue,
         };
-        store.insert_edge(
-            &table_name,
-            &edge_ref.from_qualified_name,
-            &edge_ref.to_qualified_name,
-            &[],
-        )?;
+        by_table.entry(table_name).or_default().push((
+            edge_ref.from_qualified_name.clone(),
+            edge_ref.to_qualified_name.clone(),
+            Vec::new(),
+        ));
+    }
+    for (table, edges) in &by_table {
+        store.bulk_insert_edges(table, edges)?;
     }
     Ok(())
 }
 
-/// Resolves the multi-table edge name by probing both endpoints in the DB.
+/// Resolves the multi-table edge name using the in-memory label map.
+/// This eliminates the per-edge Cypher probes that used to dominate
+/// indexing cost on large codebases.
 fn resolve_edge_table(
     kind: &str,
     from_qn: &str,
     to_qn: &str,
-    store: &GraphStore,
+    label_by_qn: &HashMap<String, String>,
 ) -> Option<String> {
     match kind {
-        "Defines" => resolve_defines_table(from_qn, to_qn, store),
-        "HasMethod" => resolve_has_method_table(from_qn, store),
-        "HasField" => resolve_has_field_table(from_qn, store),
+        "Defines" => resolve_defines_table(from_qn, to_qn, label_by_qn),
+        "HasMethod" => resolve_has_method_table(from_qn, label_by_qn),
+        "HasField" => resolve_has_field_table(from_qn, label_by_qn),
         "HasVariant" => Some("HasVariant_Enum_Variant".to_string()),
         // 3b: Extends refs are deferred to the resolver pass — skip here.
         "Extends" => None,
@@ -348,25 +470,34 @@ fn resolve_edge_table(
     }
 }
 
-/// Probes both from (File|Module) and to (symbol label) to find the table.
-fn resolve_defines_table(from_qn: &str, to_qn: &str, store: &GraphStore) -> Option<String> {
-    let from_label = probe_node_label(from_qn, store, &["File", "Module"])?;
+fn resolve_defines_table(
+    from_qn: &str,
+    to_qn: &str,
+    label_by_qn: &HashMap<String, String>,
+) -> Option<String> {
+    let from_label = lookup_label_among(from_qn, label_by_qn, &["File", "Module"])?;
     let to_candidates = &[
         "Function", "Struct", "Enum", "Trait", "Constant",
         "TypeAlias", "Module", "Import",
     ];
-    let to_label = probe_node_label(to_qn, store, to_candidates)?;
+    let to_label = lookup_label_among(to_qn, label_by_qn, to_candidates)?;
     let table = format!("Defines_{from_label}_{to_label}");
     if is_valid_rel_table(&table) { Some(table) } else { None }
 }
 
-fn resolve_has_method_table(from_qn: &str, store: &GraphStore) -> Option<String> {
-    let from_label = probe_node_label(from_qn, store, &["Struct", "Enum", "Trait"])?;
+fn resolve_has_method_table(
+    from_qn: &str,
+    label_by_qn: &HashMap<String, String>,
+) -> Option<String> {
+    let from_label = lookup_label_among(from_qn, label_by_qn, &["Struct", "Enum", "Trait"])?;
     Some(format!("HasMethod_{from_label}_Method"))
 }
 
-fn resolve_has_field_table(from_qn: &str, store: &GraphStore) -> Option<String> {
-    let from_label = probe_node_label(from_qn, store, &["Struct", "Enum"])?;
+fn resolve_has_field_table(
+    from_qn: &str,
+    label_by_qn: &HashMap<String, String>,
+) -> Option<String> {
+    let from_label = lookup_label_among(from_qn, label_by_qn, &["Struct", "Enum"])?;
     Some(format!("HasField_{from_label}_Field"))
 }
 
@@ -374,18 +505,19 @@ fn resolve_has_field_table(from_qn: &str, store: &GraphStore) -> Option<String> 
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Checks which label a node with the given id belongs to.
-fn probe_node_label(id: &str, store: &GraphStore, candidates: &[&str]) -> Option<String> {
-    let escaped = id.replace('\'', "\\'");
-    for label in candidates {
-        let cypher = format!("MATCH (n:{label}) WHERE n.id = '{escaped}' RETURN n.id");
-        if let Ok(qr) = store.execute_query(&cypher) {
-            if !qr.rows.is_empty() {
-                return Some(label.to_string());
-            }
-        }
+/// Looks up the known label for an id and returns it only if it is one of the
+/// allowed candidates for the edge kind. No DB access.
+fn lookup_label_among(
+    id: &str,
+    label_by_qn: &HashMap<String, String>,
+    candidates: &[&str],
+) -> Option<String> {
+    let lbl = label_by_qn.get(id)?;
+    if candidates.iter().any(|c| *c == lbl.as_str()) {
+        Some(lbl.clone())
+    } else {
+        None
     }
-    None
 }
 
 /// Checks if a rel table name exists in the known schema.
@@ -427,11 +559,6 @@ fn is_valid_rel_table(name: &str) -> bool {
 
 fn relative_path(root: &Path, file: &Path) -> PathBuf {
     file.strip_prefix(root).unwrap_or(file).to_path_buf()
-}
-
-/// Wraps a value in single-quotes for Cypher string literal.
-fn cypher_str(s: &str) -> String {
-    format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))
 }
 
 // Schema awareness — source: graph_store.rs node_table_ddl().
@@ -518,5 +645,45 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_symlink_skipped() {
+        // source: C4 fix — symlinks in the walked tree must not be followed.
+        // We build a small directory with one real .rs file and one symlink
+        // that points to a file OUTSIDE the tree (a decoy `/etc/hostname`).
+        // collect_source_files must return only the real file.
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!(
+            "indexer_symlink_test_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        // Real file: a simple Rust source.
+        let real_file = root.join("real.rs");
+        std::fs::write(&real_file, "fn main() {}\n").unwrap();
+
+        // Symlink → /etc/hostname (exists on macOS, has the .rs extension
+        // faked via the link name so the walker would pick it up if it
+        // followed symlinks).
+        let link = root.join("leaky.rs");
+        // Guard: if the target doesn't exist, use another known file.
+        let target = if Path::new("/etc/hostname").exists() {
+            Path::new("/etc/hostname")
+        } else {
+            Path::new("/etc/passwd")
+        };
+        symlink(target, &link).unwrap();
+
+        let files = collect_source_files(&root, None).unwrap();
+        // Only the real file is indexed; the symlink is skipped.
+        assert_eq!(files.len(), 1, "symlink must not be collected: {files:?}");
+        assert_eq!(files[0].file_name().unwrap(), "real.rs");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

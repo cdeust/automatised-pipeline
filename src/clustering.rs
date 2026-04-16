@@ -347,30 +347,38 @@ fn persist_communities(
         *counts.entry(c).or_insert(0) += 1;
     }
 
-    // Create Community nodes
-    for c in 0..num_comms {
-        let count = counts.get(&c).copied().unwrap_or(0);
-        let cid = format!("community::louvain::{gamma}::{c}");
-        let cid_esc = cid.replace('\'', "\\'");
-        store.insert_node("Community", &[
-            ("id", &format!("'{cid_esc}'")),
-            ("name", &format!("'community_{c}'")),
-            ("algorithm", "'louvain+c2'"),
-            ("resolution_param", &gamma.to_string()),
-            ("member_count", &count.to_string()),
-            ("modularity_contribution", &format!("{:.6}", modularity)),
-        ])?;
-    }
+    // Create Community nodes (bulk-insert).
+    // source: Fermi audit April 2026 — was per-row CREATE, now batched.
+    let community_rows: Vec<Vec<(String, String)>> = (0..num_comms)
+        .map(|c| {
+            let count = counts.get(&c).copied().unwrap_or(0);
+            let cid = format!("community::louvain::{gamma}::{c}");
+            let cid_esc = cid.replace('\'', "\\'");
+            vec![
+                ("id".into(), format!("'{cid_esc}'")),
+                ("name".into(), format!("'community_{c}'")),
+                ("algorithm".into(), "'louvain+c2'".into()),
+                ("resolution_param".into(), gamma.to_string()),
+                ("member_count".into(), count.to_string()),
+                ("modularity_contribution".into(), format!("{:.6}", modularity)),
+            ]
+        })
+        .collect();
+    store.bulk_insert_nodes("Community", &community_rows)?;
 
-    // Create MemberOf edges
+    // Create MemberOf edges grouped per rel table.
+    let mut by_rel: HashMap<String, Vec<(String, String, Vec<(String, String)>)>> =
+        HashMap::new();
     for (idx, &c) in comm.iter().enumerate() {
         let node_id = &adj.node_ids[idx];
         let label = &adj.node_labels[idx];
         let cid = format!("community::louvain::{gamma}::{c}");
         let rel = format!("MemberOf_{label}_Community");
-        store.insert_edge(&rel, node_id, &cid, &[])?;
+        by_rel.entry(rel).or_default().push((node_id.clone(), cid, Vec::new()));
     }
-
+    for (rel, edges) in &by_rel {
+        store.bulk_insert_edges(rel, edges)?;
+    }
     Ok(num_comms as u64)
 }
 
@@ -476,11 +484,12 @@ fn trace_one_process(
     store: &GraphStore,
     entry: &EntryPoint,
     call_edges: &HashMap<String, Vec<String>>,
+    id_to_label: &HashMap<String, String>,
 ) -> Result<ProcessInfo, String> {
     let process_id = format!("process::{}", entry.qualified_name);
     let (visited, max_depth) = bfs_from_entry(&entry.id, call_edges);
     persist_process_node(store, entry, &process_id, &visited, max_depth)?;
-    persist_participates_in(store, &visited, &process_id)?;
+    persist_participates_in(store, &visited, &process_id, id_to_label)?;
 
     Ok(ProcessInfo {
         name: process_id,
@@ -540,33 +549,55 @@ fn persist_participates_in(
     store: &GraphStore,
     visited: &HashSet<String>,
     process_id: &str,
+    id_to_label: &HashMap<String, String>,
 ) -> Result<(), String> {
+    // Group edges by rel table, bulk-insert per group.
+    // source: Fermi audit April 2026 — was 2 probe queries per visited node
+    //         plus a per-row CREATE; now zero probes and one bulk call per rel.
+    let mut by_rel: HashMap<String, Vec<(String, String, Vec<(String, String)>)>> =
+        HashMap::new();
     for node_id in visited {
-        let label = probe_node_label_for_process(store, node_id);
-        if let Some(lbl) = label {
-            let rel = format!("ParticipatesIn_{lbl}_Process");
-            // Ignore errors for labels without ParticipatesIn tables
-            let _ = store.insert_edge(&rel, node_id, process_id, &[
-                ("depth", "0"),
-            ]);
-        }
+        let lbl = match id_to_label.get(node_id) {
+            Some(l) => l,
+            None => continue,
+        };
+        let rel = format!("ParticipatesIn_{lbl}_Process");
+        by_rel
+            .entry(rel)
+            .or_default()
+            .push((
+                node_id.clone(),
+                process_id.to_string(),
+                vec![("depth".into(), "0".into())],
+            ));
+    }
+    for (rel, edges) in &by_rel {
+        // Ignore errors: some labels may lack a ParticipatesIn table.
+        let _ = store.bulk_insert_edges(rel, edges);
     }
     Ok(())
 }
 
-fn probe_node_label_for_process(store: &GraphStore, id: &str) -> Option<String> {
-    let escaped = id.replace('\'', "\\'");
+/// Loads id -> label for every Function and Method in the graph. One scan
+/// per label (two total) replaces the per-node probes that used to fire
+/// inside persist_participates_in.
+fn build_call_target_labels(
+    store: &GraphStore,
+) -> Result<HashMap<String, String>, String> {
+    let mut map = HashMap::new();
     for label in &["Function", "Method"] {
-        let cypher = format!(
-            "MATCH (n:{label}) WHERE n.id = '{escaped}' RETURN n.id"
-        );
-        if let Ok(qr) = store.execute_query(&cypher) {
-            if !qr.rows.is_empty() {
-                return Some(label.to_string());
+        let cypher = format!("MATCH (n:{label}) RETURN n.id");
+        let qr = match store.execute_query(&cypher) {
+            Ok(q) => q,
+            Err(_) => continue,
+        };
+        for row in &qr.rows {
+            if !row.is_empty() {
+                map.insert(row[0].clone(), label.to_string());
             }
         }
     }
-    None
+    Ok(map)
 }
 
 fn collect_call_edges(
@@ -603,9 +634,12 @@ fn collect_call_edges(
 pub fn trace_processes(store: &GraphStore) -> Result<u64, String> {
     let entries = detect_entry_points(store)?;
     let call_edges = collect_call_edges(store)?;
+    // Single scan: build id -> label once so persist_participates_in needs
+    // zero database probes. source: Fermi audit April 2026.
+    let id_to_label = build_call_target_labels(store)?;
     let mut count = 0u64;
     for entry in &entries {
-        trace_one_process(store, entry, &call_edges)?;
+        trace_one_process(store, entry, &call_edges, &id_to_label)?;
         count += 1;
     }
     Ok(count)

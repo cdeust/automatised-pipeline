@@ -30,6 +30,9 @@ tree-sitter-typescript = "0.23"
 # In-process search engine, MIT licensed (quickwit-oss).
 tantivy = "0.22"
 
+[dev-dependencies]
+tempfile = "3"
+
 [profile.release]
 opt-level = 3
 lto = "thin"

@@ -7,7 +7,7 @@
 // source: stages/stage-3b.md §4, §5
 
 use crate::graph_store::GraphStore;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 // ---------------------------------------------------------------------------
@@ -95,12 +95,19 @@ pub fn resolve_graph(store: &GraphStore) -> Result<ResolutionResult, String> {
     let start = Instant::now();
     let idx = build_symbol_index(store)?;
     let file_imports = build_file_import_map(store)?;
+    let existing = load_existing_edges(store)?;
+    let mut buf = EdgeBuffer::new(existing);
 
-    let (imp_resolved, imp_total, imp_unresolved) = resolve_imports(store, &idx)?;
-    let (call_resolved, call_total, call_unresolved) = resolve_calls(store, &idx, &file_imports)?;
-    let (impl_resolved, impl_total, impl_unresolved) = resolve_implements(store, &idx)?;
+    let (imp_resolved, imp_total, imp_unresolved) = resolve_imports(store, &idx, &mut buf)?;
+    let (call_resolved, call_total, call_unresolved) =
+        resolve_calls(store, &idx, &file_imports, &mut buf)?;
+    let (impl_resolved, impl_total, impl_unresolved) =
+        resolve_implements(store, &idx, &mut buf)?;
     let (ext_resolved, ext_total, ext_unresolved) = resolve_extends(store, &idx)?;
-    let (uses_resolved, uses_total, uses_unresolved) = resolve_uses(store, &idx, &file_imports)?;
+    let (uses_resolved, uses_total, uses_unresolved) =
+        resolve_uses(store, &idx, &file_imports, &mut buf)?;
+
+    buf.flush(store)?;
 
     let total_edges = imp_resolved + call_resolved + impl_resolved + ext_resolved + uses_resolved;
     let total_refs = imp_total + call_total + impl_total + ext_total + uses_total;
@@ -126,13 +133,104 @@ pub fn resolve_graph(store: &GraphStore) -> Result<ResolutionResult, String> {
 }
 
 // ---------------------------------------------------------------------------
+// EdgeBuffer — in-memory staging area for resolution edges.
+//
+// Collects all resolved edges across phases, deduplicates via a HashSet of
+// (rel_table, from, to) triples, and flushes grouped by rel_table through
+// GraphStore::bulk_insert_edges at the end. Eliminates per-edge MATCH+CREATE
+// round-trips and the idempotency sub-query that used to run before every
+// insert_resolution_edge call.
+// source: Fermi audit April 2026 — resolver was bottlenecked by this loop.
+// ---------------------------------------------------------------------------
+
+struct EdgeBuffer {
+    by_table: HashMap<String, Vec<(String, String, Vec<(String, String)>)>>,
+    seen: HashSet<(String, String, String)>,
+}
+
+impl EdgeBuffer {
+    fn new(existing: HashSet<(String, String, String)>) -> Self {
+        Self { by_table: HashMap::new(), seen: existing }
+    }
+
+    /// Stages an edge. Returns true if newly staged, false if duplicate.
+    fn add(
+        &mut self,
+        rel_table: &str,
+        from_id: &str,
+        to_id: &str,
+        confidence: f64,
+        method: &str,
+    ) -> bool {
+        let key = (rel_table.to_string(), from_id.to_string(), to_id.to_string());
+        if self.seen.contains(&key) {
+            return false;
+        }
+        self.seen.insert(key);
+        let props = vec![
+            ("confidence".to_string(), confidence.to_string()),
+            ("resolution_method".to_string(), format!("'{method}'")),
+        ];
+        self.by_table
+            .entry(rel_table.to_string())
+            .or_default()
+            .push((from_id.to_string(), to_id.to_string(), props));
+        true
+    }
+
+    fn flush(self, store: &GraphStore) -> Result<(), String> {
+        for (table, edges) in &self.by_table {
+            store.bulk_insert_edges(table, edges)?;
+        }
+        Ok(())
+    }
+}
+
+/// Reads all resolution edges currently in the graph so the EdgeBuffer's
+/// idempotency check works on a re-run without per-edge count(r) queries.
+fn load_existing_edges(store: &GraphStore) -> Result<HashSet<(String, String, String)>, String> {
+    let mut seen = HashSet::new();
+    use crate::graph_store::REL_TABLES;
+    for &(rel, from_label, to_label) in REL_TABLES {
+        if !is_resolution_edge(rel) {
+            continue;
+        }
+        let cypher = format!(
+            "MATCH (a:{from_label})-[r:{rel}]->(b:{to_label}) RETURN a.id, b.id"
+        );
+        let qr = match store.execute_query(&cypher) {
+            Ok(q) => q,
+            Err(_) => continue,
+        };
+        for row in &qr.rows {
+            if row.len() >= 2 {
+                seen.insert((rel.to_string(), row[0].clone(), row[1].clone()));
+            }
+        }
+    }
+    Ok(seen)
+}
+
+fn is_resolution_edge(rel: &str) -> bool {
+    rel.starts_with("Imports_")
+        || rel.starts_with("Calls_")
+        || rel.starts_with("Implements_")
+        || rel.starts_with("Extends_")
+        || rel.starts_with("Uses_")
+}
+
+// ---------------------------------------------------------------------------
 // Phase 1: Import resolution
 // source: stages/stage-3b.md §5.1
 // ---------------------------------------------------------------------------
 
 type PhaseResult = Result<(u64, u64, Vec<UnresolvedRef>), String>;
 
-fn resolve_imports(store: &GraphStore, idx: &SymbolIndex) -> PhaseResult {
+fn resolve_imports(
+    store: &GraphStore,
+    idx: &SymbolIndex,
+    buf: &mut EdgeBuffer,
+) -> PhaseResult {
     let qr = store.execute_query(
         "MATCH (i:Import) RETURN i.id, i.path, i.is_glob"
     )?;
@@ -144,7 +242,7 @@ fn resolve_imports(store: &GraphStore, idx: &SymbolIndex) -> PhaseResult {
         if row.len() < 3 {
             continue;
         }
-        let (r, u) = resolve_one_import(store, idx, &row[0], &row[1], &row[2])?;
+        let (r, u) = resolve_one_import(idx, buf, &row[0], &row[1], &row[2]);
         resolved += r;
         unresolved.extend(u);
     }
@@ -152,76 +250,67 @@ fn resolve_imports(store: &GraphStore, idx: &SymbolIndex) -> PhaseResult {
 }
 
 fn resolve_one_import(
-    store: &GraphStore,
     idx: &SymbolIndex,
+    buf: &mut EdgeBuffer,
     import_id: &str,
     path: &str,
     is_glob_str: &str,
-) -> Result<(u64, Vec<UnresolvedRef>), String> {
+) -> (u64, Vec<UnresolvedRef>) {
     if is_external_crate(path) {
-        return Ok((0, vec![UnresolvedRef {
+        return (0, vec![UnresolvedRef {
             kind: "Imports".to_string(), from_id: import_id.to_string(),
             target_text: path.to_string(), reason: "external crate".to_string(),
-        }]));
+        }]);
     }
     let file_id = extract_file_from_import_id(import_id);
     let normalized = normalize_import_path(path);
     let is_glob = is_glob_str == "true" || is_glob_str == "True";
 
     if is_glob {
-        let count = resolve_glob_import(store, idx, &file_id, &normalized)?;
-        return Ok((count, vec![]));
+        return (resolve_glob_import(idx, buf, &file_id, &normalized), vec![]);
     }
-    match resolve_single_import(store, idx, &file_id, &normalized) {
-        Some(count) => Ok((count, vec![])),
-        None => Ok((0, vec![UnresolvedRef {
+    match resolve_single_import(idx, buf, &file_id, &normalized) {
+        Some(count) => (count, vec![]),
+        None => (0, vec![UnresolvedRef {
             kind: "Imports".to_string(), from_id: import_id.to_string(),
             target_text: path.to_string(), reason: "no target found in graph".to_string(),
-        }])),
+        }]),
     }
 }
 
 fn resolve_single_import(
-    store: &GraphStore,
     idx: &SymbolIndex,
+    buf: &mut EdgeBuffer,
     file_id: &str,
     normalized_path: &str,
 ) -> Option<u64> {
-    // Try exact qualified name match first
     let last_segment = normalized_path.rsplit("::").next().unwrap_or(normalized_path);
-
-    // Search by name in index
     let candidates = idx.by_name.get(last_segment)?;
     let matched = pick_best_candidate(candidates, normalized_path);
     let entry = matched?;
-
     let table = format!("Imports_File_{}", entry.label);
     let conf = compute_import_confidence(candidates.len());
-    insert_resolution_edge(store, &table, file_id, &entry.id, conf, "import-scope-lookup")
-        .ok()?;
+    buf.add(&table, file_id, &entry.id, conf, "import-scope-lookup");
     Some(1)
 }
 
 fn resolve_glob_import(
-    store: &GraphStore,
     idx: &SymbolIndex,
+    buf: &mut EdgeBuffer,
     file_id: &str,
     module_path: &str,
-) -> Result<u64, String> {
+) -> u64 {
     let mut count = 0u64;
-    // Find all symbols whose qualified_name starts with a path matching module_path
     for (_qn, entry) in &idx.by_qn {
         if !is_child_of_module(_qn, module_path) {
             continue;
         }
         let table = format!("Imports_File_{}", entry.label);
-        if insert_resolution_edge(store, &table, file_id, &entry.id, 0.9, "import-scope-lookup")
-            .is_ok()
-        {
+        if buf.add(&table, file_id, &entry.id, 0.9, "import-scope-lookup") {
             count += 1;
         }
     }
-    Ok(count)
+    count
 }
 
 // ---------------------------------------------------------------------------
@@ -233,6 +322,7 @@ fn resolve_calls(
     store: &GraphStore,
     idx: &SymbolIndex,
     file_imports: &HashMap<String, Vec<String>>,
+    buf: &mut EdgeBuffer,
 ) -> PhaseResult {
     let qr = store.execute_query(
         "MATCH (cs:CallSite) RETURN cs.id, cs.callee_name"
@@ -253,12 +343,9 @@ fn resolve_calls(
 
         match resolve_single_call(idx, file_imports, callee, &file_id) {
             Some(target) => {
-                let table = format!("{}_{}", caller_label, target.label);
-                let rel = format!("Calls_{table}");
+                let rel = format!("Calls_{}_{}", caller_label, target.label);
                 let conf = if callee.contains("::") { 1.0 } else { 0.9 };
-                if insert_resolution_edge(
-                    store, &rel, &caller_qn, &target.id, conf, "import-scope-lookup",
-                ).is_ok() {
+                if buf.add(&rel, &caller_qn, &target.id, conf, "import-scope-lookup") {
                     resolved += 1;
                 }
             }
@@ -316,7 +403,11 @@ fn resolve_single_call(
 // source: stages/stage-3b.md §5.3
 // ---------------------------------------------------------------------------
 
-fn resolve_implements(store: &GraphStore, idx: &SymbolIndex) -> PhaseResult {
+fn resolve_implements(
+    store: &GraphStore,
+    idx: &SymbolIndex,
+    buf: &mut EdgeBuffer,
+) -> PhaseResult {
     let qr = store.execute_query(
         "MATCH (m:Method) WHERE m.receiver_type <> '' \
          RETURN m.receiver_type, m.id"
@@ -353,13 +444,14 @@ fn resolve_implements(store: &GraphStore, idx: &SymbolIndex) -> PhaseResult {
     // The spec says "Method nodes with trait_name property (already extracted by 3a)".
     // But the schema lacks the column. We must add it.
     // For idempotent operation, just return 0 resolved if column missing.
-    let resolved_count = resolve_implements_from_schema(store, idx)?;
+    let resolved_count = resolve_implements_from_schema(store, idx, buf)?;
     Ok((resolved_count, 0, Vec::new()))
 }
 
 fn resolve_implements_from_schema(
     store: &GraphStore,
     idx: &SymbolIndex,
+    buf: &mut EdgeBuffer,
 ) -> Result<u64, String> {
     let mut resolved = 0u64;
     let mut seen = std::collections::HashSet::new();
@@ -375,7 +467,7 @@ fn resolve_implements_from_schema(
             continue;
         }
         resolved += match_struct_to_traits(
-            store, idx, &row[0], &row[2], &trait_method_map, &mut seen,
+            idx, buf, &row[0], &row[2], &trait_method_map, &mut seen,
         );
     }
     Ok(resolved)
@@ -399,8 +491,8 @@ fn build_trait_method_map(
 }
 
 fn match_struct_to_traits(
-    store: &GraphStore,
     idx: &SymbolIndex,
+    buf: &mut EdgeBuffer,
     struct_id: &str,
     method_name: &str,
     trait_method_map: &HashMap<String, Vec<(String, String)>>,
@@ -418,9 +510,7 @@ fn match_struct_to_traits(
         let label = idx.by_qn.get(struct_id)
             .map(|e| e.label.as_str()).unwrap_or("Struct");
         let table = format!("Implements_{label}_Trait");
-        if insert_resolution_edge(
-            store, &table, struct_id, trait_id, 0.7, "trait-name-match",
-        ).is_ok() {
+        if buf.add(&table, struct_id, trait_id, 0.7, "trait-name-match") {
             count += 1;
         }
     }
@@ -491,13 +581,14 @@ fn resolve_uses(
     store: &GraphStore,
     idx: &SymbolIndex,
     file_imports: &HashMap<String, Vec<String>>,
+    buf: &mut EdgeBuffer,
 ) -> PhaseResult {
     let mut resolved = 0u64;
     let mut total = 0u64;
     let mut unresolved = Vec::new();
 
     // Resolve field type annotations -> Struct/Enum/Trait
-    let field_result = resolve_field_type_uses(store, idx, file_imports)?;
+    let field_result = resolve_field_type_uses(store, idx, file_imports, buf)?;
     resolved += field_result.0;
     total += field_result.1;
     unresolved.extend(field_result.2);
@@ -509,6 +600,7 @@ fn resolve_field_type_uses(
     store: &GraphStore,
     idx: &SymbolIndex,
     _file_imports: &HashMap<String, Vec<String>>,
+    buf: &mut EdgeBuffer,
 ) -> PhaseResult {
     let qr = store.execute_query(
         "MATCH (f:Field) RETURN f.id, f.type_annotation"
@@ -528,9 +620,7 @@ fn resolve_field_type_uses(
         for type_name in &type_names {
             if let Some(target) = find_type_target(idx, type_name) {
                 let table = format!("Uses_Field_{}", target.label);
-                if insert_resolution_edge(
-                    store, &table, field_id, &target.id, 0.9, "type-annotation-parse",
-                ).is_ok() {
+                if buf.add(&table, field_id, &target.id, 0.9, "type-annotation-parse") {
                     resolved += 1;
                 }
             } else {
@@ -607,57 +697,6 @@ fn build_file_import_map(store: &GraphStore) -> Result<HashMap<String, Vec<Strin
         map.entry(file_id).or_default().push(row[1].clone());
     }
     Ok(map)
-}
-
-// ---------------------------------------------------------------------------
-// Edge insertion helper — idempotent
-// source: stages/stage-3b.md §4.2
-// ---------------------------------------------------------------------------
-
-fn insert_resolution_edge(
-    store: &GraphStore,
-    rel_type: &str,
-    from_id: &str,
-    to_id: &str,
-    confidence: f64,
-    method: &str,
-) -> Result<(), String> {
-    // Check if edge already exists (idempotency)
-    let check = check_edge_exists(store, rel_type, from_id, to_id);
-    if check {
-        return Ok(());
-    }
-    store.insert_edge(
-        rel_type,
-        from_id,
-        to_id,
-        &[
-            ("confidence", &confidence.to_string()),
-            ("resolution_method", &format!("'{method}'")),
-        ],
-    )
-}
-
-fn check_edge_exists(store: &GraphStore, rel_type: &str, from_id: &str, to_id: &str) -> bool {
-    let from_esc = from_id.replace('\'', "\\'");
-    let to_esc = to_id.replace('\'', "\\'");
-    // Parse the labels from the rel_type name
-    let parts: Vec<&str> = rel_type.splitn(3, '_').collect();
-    if parts.len() < 3 {
-        return false;
-    }
-    let from_label = parts[1];
-    let to_label = parts[2];
-    let cypher = format!(
-        "MATCH (a:{from_label})-[r:{rel_type}]->(b:{to_label}) \
-         WHERE a.id = '{from_esc}' AND b.id = '{to_esc}' RETURN count(r)"
-    );
-    match store.execute_query(&cypher) {
-        Ok(qr) => {
-            !qr.rows.is_empty() && qr.rows[0][0].parse::<u64>().unwrap_or(0) > 0
-        }
-        Err(_) => false,
-    }
 }
 
 // ---------------------------------------------------------------------------

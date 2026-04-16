@@ -351,15 +351,43 @@ fn search_substring(
 }
 
 // ---------------------------------------------------------------------------
-// get_context — 360° symbol view (unchanged from v1)
+// get_context — 360° symbol view
 // ---------------------------------------------------------------------------
+
+/// Error returned by `get_context` when a symbol cannot be resolved.
+/// Carries "did you mean" suggestions so the MCP caller can surface them
+/// verbatim instead of choking on a bare "symbol not found" string.
+///
+/// source: C-correctness bug 2 — callers naturally pass `src/main.rs::X`
+/// while the graph stores `main.rs::X`; the old API returned a flat Err
+/// that hid the near-misses.
+#[derive(Debug, Clone)]
+pub struct SymbolNotFound {
+    pub input: String,
+    pub did_you_mean: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum GetContextError {
+    NotFound(SymbolNotFound),
+    Other(String),
+}
+
+impl From<String> for GetContextError {
+    fn from(s: String) -> Self { GetContextError::Other(s) }
+}
 
 pub fn get_context(
     store: &GraphStore,
     qualified_name: &str,
-) -> Result<SymbolContext, String> {
-    let escaped = qualified_name.replace('\'', "\\'");
+) -> Result<SymbolContext, GetContextError> {
+    // Layer 1: exact match (qualified_name OR id).
+    // Layer 2: strip first path component and retry (src/foo::X → foo::X).
+    // Layer 3: name-only fuzzy match — return top candidates.
+    let resolved = resolve_qualified_name(store, qualified_name)
+        .map_err(GetContextError::NotFound)?;
 
+    let escaped = resolved.replace('\'', "\\'");
     let (label, name, file_path, start_line, end_line, visibility) =
         find_node_details(store, &escaped)?;
 
@@ -375,7 +403,7 @@ pub fn get_context(
     let processes = find_processes(store, &escaped);
 
     Ok(SymbolContext {
-        qualified_name: qualified_name.to_string(),
+        qualified_name: resolved,
         name,
         label,
         file_path,
@@ -393,6 +421,96 @@ pub fn get_context(
         community,
         processes,
     })
+}
+
+/// Three-layer qualified-name lookup.
+/// Returns the resolved (stored) qualified_name on success, or a
+/// `SymbolNotFound` carrying suggestions when every layer misses.
+///
+/// Used by both `get_context` and `get_symbol` so both tools share the
+/// same forgiving input surface.
+pub fn resolve_qualified_name(
+    store: &GraphStore,
+    input: &str,
+) -> Result<String, SymbolNotFound> {
+    // Layer 1 — exact.
+    if let Some(qn) = exact_match_qn(store, input) {
+        return Ok(qn);
+    }
+
+    // Layer 2 — strip first path component if the input has one.
+    // Parser strips `src/` when building qualified_names, so callers who
+    // naturally pass `src/main.rs::foo` must find `main.rs::foo`.
+    if let Some(stripped) = strip_leading_path_component(input) {
+        if let Some(qn) = exact_match_qn(store, &stripped) {
+            return Ok(qn);
+        }
+    }
+
+    // Layer 3 — name-only fuzzy. Return top candidates as suggestions.
+    let leaf = input.rsplit("::").next().unwrap_or(input);
+    let suggestions = find_name_candidates(store, leaf, 5);
+    Err(SymbolNotFound {
+        input: input.to_string(),
+        did_you_mean: suggestions,
+    })
+}
+
+fn strip_leading_path_component(input: &str) -> Option<String> {
+    // Only act if the path portion (before `::`) has a `/`.
+    let (path_part, rest) = match input.find("::") {
+        Some(i) => (&input[..i], &input[i..]),
+        None => (input, ""),
+    };
+    let idx = path_part.find('/')?;
+    Some(format!("{}{}", &path_part[idx + 1..], rest))
+}
+
+fn exact_match_qn(store: &GraphStore, input: &str) -> Option<String> {
+    let escaped = input.replace('\'', "\\'");
+    let labels = [
+        "Function", "Method", "Struct", "Enum", "Trait",
+        "Module", "Constant", "TypeAlias",
+    ];
+    for label in labels {
+        let cypher = format!(
+            "MATCH (n:{label}) WHERE n.qualified_name = '{escaped}' OR n.id = '{escaped}' \
+             RETURN n.qualified_name LIMIT 1"
+        );
+        if let Ok(qr) = store.execute_query(&cypher) {
+            if let Some(row) = qr.rows.first() {
+                if !row.is_empty() {
+                    return Some(row[0].clone());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn find_name_candidates(store: &GraphStore, name: &str, limit: usize) -> Vec<String> {
+    let escaped = name.replace('\'', "\\'");
+    let labels = [
+        "Function", "Method", "Struct", "Enum", "Trait",
+        "Module", "Constant", "TypeAlias",
+    ];
+    let mut out = Vec::new();
+    for label in labels {
+        if out.len() >= limit { break; }
+        let cypher = format!(
+            "MATCH (n:{label}) WHERE n.name = '{escaped}' \
+             RETURN n.qualified_name LIMIT {limit}"
+        );
+        if let Ok(qr) = store.execute_query(&cypher) {
+            for row in &qr.rows {
+                if out.len() >= limit { break; }
+                if !row.is_empty() && !out.contains(&row[0]) {
+                    out.push(row[0].clone());
+                }
+            }
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -813,5 +931,89 @@ mod tests {
     fn test_extract_file_path() {
         assert_eq!(extract_file_path("src/main.rs::handle_tool_call"), "src/main.rs");
         assert_eq!(extract_file_path("src/lib.rs"), "src/lib.rs");
+    }
+
+    #[test]
+    fn test_strip_leading_path_component() {
+        // source: C-correctness bug 2 — callers pass `src/main.rs::foo`,
+        // the graph stores `main.rs::foo`. Layer 2 of the three-layer lookup
+        // drops the first path component and retries.
+        assert_eq!(
+            strip_leading_path_component("src/main.rs::foo"),
+            Some("main.rs::foo".to_string())
+        );
+        assert_eq!(
+            strip_leading_path_component("src/foo/bar.rs::baz"),
+            Some("foo/bar.rs::baz".to_string())
+        );
+        // No slash → nothing to strip.
+        assert_eq!(strip_leading_path_component("main.rs::foo"), None);
+        // Slash in the `::`-suffix is ignored — only the path part is split.
+        assert_eq!(
+            strip_leading_path_component("src/main.rs::Foo::bar"),
+            Some("main.rs::Foo::bar".to_string())
+        );
+    }
+
+    // Integration tests — build a real graph from src/ and exercise the
+    // three-layer qualified-name lookup end to end.
+    use crate::graph_store::GraphStore;
+    use crate::indexer::index_codebase;
+    use std::path::Path;
+
+    fn fresh_store(tag: &str) -> (std::path::PathBuf, GraphStore) {
+        let tmp = std::env::temp_dir()
+            .join(format!("search_test_{}_{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let r = index_codebase(Path::new("src"), &tmp).unwrap();
+        let store = GraphStore::open_or_create(&r.graph_path).unwrap();
+        (tmp, store)
+    }
+
+    #[test]
+    fn test_get_context_accepts_src_prefix() {
+        // Callers passing `src/main.rs::handle_tool_call` must resolve to the
+        // stored `main.rs::handle_tool_call`.
+        let (tmp, store) = fresh_store("src_prefix");
+        let resolved = resolve_qualified_name(&store, "src/main.rs::handle_tool_call")
+            .expect("src/-prefixed qualified_name must resolve");
+        assert_eq!(resolved, "main.rs::handle_tool_call");
+
+        let ctx = get_context(&store, "src/main.rs::handle_tool_call")
+            .map_err(|e| match e {
+                GetContextError::NotFound(nf) => format!("not found: {:?}", nf.did_you_mean),
+                GetContextError::Other(s) => s,
+            })
+            .expect("get_context must succeed with src/ prefix");
+        assert_eq!(ctx.qualified_name, "main.rs::handle_tool_call");
+        assert_eq!(ctx.name, "handle_tool_call");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_get_context_did_you_mean() {
+        // An unknown qualified_name must fail with suggestions, not a
+        // flat string error.
+        let (tmp, store) = fresh_store("did_you_mean");
+        let err = get_context(&store, "nonexistent.rs::handle_tool_call")
+            .err()
+            .expect("unknown qn must error");
+        match err {
+            GetContextError::NotFound(nf) => {
+                assert_eq!(nf.input, "nonexistent.rs::handle_tool_call");
+                assert!(
+                    !nf.did_you_mean.is_empty(),
+                    "did_you_mean must include candidates by name"
+                );
+                assert!(
+                    nf.did_you_mean.iter().any(|s| s.ends_with("::handle_tool_call")),
+                    "expected a `handle_tool_call` candidate, got {:?}",
+                    nf.did_you_mean
+                );
+            }
+            GetContextError::Other(m) => panic!("expected NotFound, got Other({m})"),
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

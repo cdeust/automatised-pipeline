@@ -31,9 +31,15 @@ pub fn resolve_with_lsp(
 ) -> Result<LspResolutionResult, String> {
     let start = Instant::now();
 
-    // Determine LSP command
+    // Determine LSP command.
+    // source: C3 fix — caller-provided `lsp_command_override` must be validated
+    // against the allowlist BEFORE `Command::new` to prevent arbitrary binary
+    // execution. `LspClient::start` also validates as defense-in-depth.
     let (cmd, default_args) = match lsp_command_override {
-        Some(c) => (c, &[] as &[&str]),
+        Some(c) => {
+            lsp_client::validate_lsp_command(c)?;
+            (c, &[] as &[&str])
+        }
         None => {
             let detected = lsp_client::detect_lsp_command(language)
                 .ok_or(format!("no LSP server known for language '{language}'"))?;
@@ -77,7 +83,7 @@ pub fn resolve_with_lsp(
             skipped_count += sites.len() as u64;
             continue;
         }
-        let file_uri = format!("file://{}", abs_path.display());
+        let file_uri = lsp_client::path_to_file_uri(&abs_path);
         let lang_id = language_id_for(language);
 
         // Read file content for didOpen

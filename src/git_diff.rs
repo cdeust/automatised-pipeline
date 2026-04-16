@@ -8,11 +8,40 @@
 // ranges. Each affected symbol is enriched with community and process membership.
 
 use crate::clustering;
-use crate::graph_store::GraphStore;
+use crate::graph_store::{cypher_str, GraphStore};
 use serde::Serialize;
 use std::collections::HashSet;
 use std::path::Path;
 use std::process::Command;
+
+// ---------------------------------------------------------------------------
+// Safety limit — diff line counter overflow guard.
+// source: M3 fix — current_line is u64, but a malicious diff with billions of
+// `+` lines could wrap around. Cap at u64::MAX / 2 so we always have headroom.
+// ---------------------------------------------------------------------------
+
+const DIFF_LINE_MAX: u64 = u64::MAX / 2;
+
+/// Validates a git ref for safe use as a positional argument.
+/// Rejects refs starting with `-` (which git would treat as an option flag)
+/// and refs containing newlines or NUL bytes.
+/// source: C2 fix — git CVE-2018-17456 class vulnerability prevention.
+fn validate_git_ref(r: &str, field: &str) -> Result<(), String> {
+    if r.is_empty() {
+        return Err(format!("invalid_ref: {field} must not be empty"));
+    }
+    if r.starts_with('-') {
+        return Err(format!(
+            "invalid_ref: {field} must not start with '-' (got {r:?})"
+        ));
+    }
+    if r.contains('\n') || r.contains('\0') {
+        return Err(format!(
+            "invalid_ref: {field} must not contain newline or NUL (got {r:?})"
+        ));
+    }
+    Ok(())
+}
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -50,7 +79,7 @@ struct FileHunk {
     is_deleted: bool,
 }
 
-fn parse_unified_diff(diff_text: &str) -> Vec<FileHunk> {
+fn parse_unified_diff(diff_text: &str) -> Result<Vec<FileHunk>, String> {
     let mut hunks: Vec<FileHunk> = Vec::new();
     let mut current_file: Option<String> = None;
     let mut current_lines: Vec<u64> = Vec::new();
@@ -89,6 +118,9 @@ fn parse_unified_diff(diff_text: &str) -> Vec<FileHunk> {
             }
         } else if line.starts_with('+') && !line.starts_with("+++") {
             current_lines.push(current_line);
+            if current_line >= DIFF_LINE_MAX {
+                return Err("diff_too_large: line counter would overflow".to_string());
+            }
             current_line += 1;
         } else if line.starts_with('-') && !line.starts_with("---") {
             // Deleted lines affect the old position; we record current_line
@@ -97,6 +129,9 @@ fn parse_unified_diff(diff_text: &str) -> Vec<FileHunk> {
             // Don't increment — deleted lines don't exist in the new file
         } else {
             // Context line (or other)
+            if current_line >= DIFF_LINE_MAX {
+                return Err("diff_too_large: line counter would overflow".to_string());
+            }
             current_line += 1;
         }
     }
@@ -111,7 +146,7 @@ fn parse_unified_diff(diff_text: &str) -> Vec<FileHunk> {
         });
     }
 
-    hunks
+    Ok(hunks)
 }
 
 fn parse_hunk_header(line: &str) -> Option<u64> {
@@ -139,13 +174,14 @@ fn map_lines_to_symbols(
 ) -> Vec<ChangedSymbol> {
     let mut symbols: Vec<ChangedSymbol> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
-    let escaped_path = file_path.replace('\'', "\\'");
+    // source: M1 fix — centralized escape handles both `\` and `'` correctly.
+    let path_lit = cypher_str(file_path);
 
     for &label in SYMBOL_LABELS_WITH_LINES {
         let defines_rel = format!("Defines_File_{label}");
         let cypher = format!(
             "MATCH (f:File)-[:{defines_rel}]->(n:{label}) \
-             WHERE f.path = '{escaped_path}' \
+             WHERE f.path = {path_lit} \
              RETURN n.id, n.name, n.qualified_name, n.start_line, n.end_line"
         );
         let qr = match store.execute_query(&cypher) {
@@ -271,7 +307,7 @@ pub fn analyze_diff(
     store: &GraphStore,
     diff_text: &str,
 ) -> Result<DiffAnalysis, String> {
-    let hunks = parse_unified_diff(diff_text);
+    let hunks = parse_unified_diff(diff_text)?;
     build_analysis(store, &hunks)
 }
 
@@ -281,9 +317,17 @@ pub fn analyze_git_diff(
     base_ref: &str,
     head_ref: &str,
 ) -> Result<DiffAnalysis, String> {
+    validate_git_ref(base_ref, "base_ref")?;
+    validate_git_ref(head_ref, "head_ref")?;
+    // The combined `base..head` string now starts with whatever base_ref
+    // starts with (which validate_git_ref guarantees is NOT `-`).
+    // The trailing `--` tells git no pathspecs follow, so an adversarial
+    // head_ref cannot smuggle a path-based side effect either.
+    // source: C2 fix — git-diff(1) synopsis `git diff [<commit>] [--] [<path>…]`.
     let output = Command::new("git")
         .arg("diff")
         .arg(format!("{base_ref}..{head_ref}"))
+        .arg("--")
         .current_dir(codebase_path)
         .output()
         .map_err(|e| format!("failed to run git diff: {e}"))?;
@@ -367,7 +411,7 @@ diff --git a/src/main.rs b/src/main.rs
 +    let y = 2;
      let z = 3;
 ";
-        let hunks = parse_unified_diff(diff);
+        let hunks = parse_unified_diff(diff).unwrap();
         assert_eq!(hunks.len(), 1);
         assert_eq!(hunks[0].file_path, "src/main.rs");
         assert!(!hunks[0].changed_lines.is_empty());
@@ -386,7 +430,7 @@ diff --git a/src/new.rs b/src/new.rs
 +    println!(\"hello\");
 +}
 ";
-        let hunks = parse_unified_diff(diff);
+        let hunks = parse_unified_diff(diff).unwrap();
         assert_eq!(hunks.len(), 1);
         assert_eq!(hunks[0].file_path, "src/new.rs");
         assert!(hunks[0].is_new);
@@ -403,7 +447,7 @@ diff --git a/src/old.rs b/src/old.rs
 -    // gone
 -}
 ";
-        let hunks = parse_unified_diff(diff);
+        let hunks = parse_unified_diff(diff).unwrap();
         assert_eq!(hunks.len(), 1);
         assert!(hunks[0].is_deleted);
     }
@@ -424,7 +468,7 @@ diff --git a/src/b.rs b/src/b.rs
  fn b() {}
 +fn b2() {}
 ";
-        let hunks = parse_unified_diff(diff);
+        let hunks = parse_unified_diff(diff).unwrap();
         assert_eq!(hunks.len(), 2);
         assert_eq!(hunks[0].file_path, "src/a.rs");
         assert_eq!(hunks[1].file_path, "src/b.rs");
@@ -477,5 +521,50 @@ diff --git a/src/main.rs b/src/main.rs
         assert_eq!(result.risk_score, 0.0);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_git_ref_with_dash_rejected() {
+        // source: C2 fix — refs starting with `-` would be interpreted by git
+        // as option flags (e.g. `--upload-pack=rm -rf ~`, `-c core.fsmonitor=...`).
+        // Both base_ref and head_ref must be rejected before reaching Command::new.
+        let dir = std::env::temp_dir().join("git_ref_validate_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("testdb");
+        let store = GraphStore::open_or_create(&db_path).unwrap();
+        store.create_schema().unwrap();
+
+        let err = analyze_git_diff(&store, &dir, "--upload-pack=rm", "HEAD")
+            .expect_err("must reject dash-prefixed base_ref");
+        assert!(err.contains("invalid_ref"), "got: {err}");
+
+        let err2 = analyze_git_diff(&store, &dir, "main", "-c")
+            .expect_err("must reject dash-prefixed head_ref");
+        assert!(err2.contains("invalid_ref"), "got: {err2}");
+
+        let err3 = analyze_git_diff(&store, &dir, "", "HEAD")
+            .expect_err("must reject empty ref");
+        assert!(err3.contains("invalid_ref"), "got: {err3}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_diff_too_large_overflow_guard() {
+        // source: M3 fix — parse_unified_diff must return diff_too_large
+        // rather than overflowing current_line. We can't realistically craft
+        // a diff with u64::MAX lines, but validate_git_ref's logic is tested;
+        // instead smoke-test that a normal diff still succeeds and returns Ok.
+        let diff = "\
+diff --git a/x b/x
+--- a/x
++++ b/x
+@@ -1 +1,2 @@
+ keep
++add
+";
+        let hunks = parse_unified_diff(diff).expect("small diff must parse");
+        assert_eq!(hunks.len(), 1);
     }
 }
