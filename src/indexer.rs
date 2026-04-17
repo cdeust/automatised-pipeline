@@ -552,7 +552,7 @@ fn is_valid_rel_table(name: &str) -> bool {
         "Uses_Function_TypeAlias", "Uses_Method_Struct", "Uses_Method_Enum",
         "Uses_Method_Trait", "Uses_Method_TypeAlias", "Uses_Struct_Struct",
         "Uses_Struct_Enum", "Uses_Struct_Trait", "Uses_Field_Struct",
-        "Uses_Field_Enum", "Uses_Field_Trait",
+        "Uses_Field_Enum", "Uses_Field_Trait", "Uses_Field_TypeAlias",
     ];
     KNOWN.contains(&name)
 }

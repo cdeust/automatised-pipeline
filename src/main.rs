@@ -3194,6 +3194,7 @@ fn rel_table_triples() -> &'static [(&'static str, &'static str, &'static str)] 
         ("Uses_Field_Struct", "Field", "Struct"),
         ("Uses_Field_Enum", "Field", "Enum"),
         ("Uses_Field_Trait", "Field", "Trait"),
+        ("Uses_Field_TypeAlias", "Field", "TypeAlias"),
         // 3c MemberOf tables
         ("MemberOf_Function_Community", "Function", "Community"),
         ("MemberOf_Method_Community", "Method", "Community"),

@@ -178,3 +178,57 @@ pub struct Outer {
 
     let _ = fs::remove_dir_all(&tmp_root);
 }
+
+// Regression test for issue #1:
+//   "analyze_codebase fails with 'unknown relationship type:
+//    Uses_Field_TypeAlias' on real Rust codebases"
+//
+// Before the fix, indexing a struct whose field's type is a type alias
+// caused the resolver to emit a Uses_Field_TypeAlias edge, which was
+// never declared in the schema (graph_store.rs), in the indexer KNOWN
+// whitelist (indexer.rs), or in the main.rs dispatch table. The whole
+// analyze_codebase call aborted with status="error".
+#[test]
+fn test_field_type_alias_uses_resolution() {
+    let tmp_root = std::env::temp_dir().join(format!(
+        "stage3b_uses_typealias_{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&tmp_root);
+
+    let fixture_dir = tmp_root.join("fixture");
+    fs::create_dir_all(fixture_dir.join("src")).unwrap();
+    fs::write(fixture_dir.join("src/lib.rs"), r#"
+pub type Payload = Vec<u8>;
+
+pub struct Envelope {
+    pub body: Payload,
+    pub label: String,
+}
+"#).unwrap();
+
+    let graph_dir = tmp_root.join("graph");
+    indexer::index_codebase(
+        &fixture_dir.join("src"),
+        &graph_dir,
+    ).expect("index");
+
+    let store = GraphStore::open_or_create(&graph_dir).expect("open");
+    let res = resolver::resolve_graph(&store).expect("resolve");
+
+    // The `body: Payload` field must produce a Uses_Field_TypeAlias edge.
+    // If the schema / indexer / main.rs dispatch don't register that
+    // edge table, resolve_graph returns an error before this point.
+    let qr = store.execute_query(
+        "MATCH (f:Field)-[r:Uses_Field_TypeAlias]->(t:TypeAlias) \
+         RETURN f.id, t.name"
+    ).expect("query Uses_Field_TypeAlias edges");
+
+    assert!(
+        !qr.rows.is_empty(),
+        "expected Uses_Field_TypeAlias edge for body: Payload, got none. \
+         Resolution stats: uses={}", res.uses_resolved
+    );
+
+    let _ = fs::remove_dir_all(&tmp_root);
+}

@@ -441,6 +441,7 @@ pub const REL_TABLES: &[(&str, &str, &str)] = &[
     ("Uses_Field_Struct", NODE_FIELD, NODE_STRUCT),
     ("Uses_Field_Enum", NODE_FIELD, NODE_ENUM),
     ("Uses_Field_Trait", NODE_FIELD, NODE_TRAIT),
+    ("Uses_Field_TypeAlias", NODE_FIELD, NODE_TYPE_ALIAS),
     // 3c MemberOf — source: stages/stage-3c.md §4.2
     ("MemberOf_Function_Community", NODE_FUNCTION, NODE_COMMUNITY),
     ("MemberOf_Method_Community", NODE_METHOD, NODE_COMMUNITY),
