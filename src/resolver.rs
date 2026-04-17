@@ -107,7 +107,18 @@ pub fn resolve_graph(store: &GraphStore) -> Result<ResolutionResult, String> {
     let (uses_resolved, uses_total, uses_unresolved) =
         resolve_uses(store, &idx, &file_imports, &mut buf)?;
 
+    // 3b-v2 Layer 4/5 — macro + stdlib expansion. Lives in resolver_layers
+    // so resolver.rs's function surface stays stable for Q8 ground truth.
+    // source: stages/stage-3b-v2.md §5.
+    let idx_ref = &idx;
+    let macro_resolved = crate::resolver_layers::run_macro_expansion(
+        store,
+        &mut buf,
+        &|qn: &str| determine_caller_label(idx_ref, qn),
+    )?;
+
     buf.flush(store)?;
+    let call_resolved = call_resolved + macro_resolved;
 
     let total_edges = imp_resolved + call_resolved + impl_resolved + ext_resolved + uses_resolved;
     let total_refs = imp_total + call_total + impl_total + ext_total + uses_total;
@@ -143,7 +154,7 @@ pub fn resolve_graph(store: &GraphStore) -> Result<ResolutionResult, String> {
 // source: Fermi audit April 2026 — resolver was bottlenecked by this loop.
 // ---------------------------------------------------------------------------
 
-struct EdgeBuffer {
+pub struct EdgeBuffer {
     by_table: HashMap<String, Vec<(String, String, Vec<(String, String)>)>>,
     seen: HashSet<(String, String, String)>,
 }
@@ -154,7 +165,7 @@ impl EdgeBuffer {
     }
 
     /// Stages an edge. Returns true if newly staged, false if duplicate.
-    fn add(
+    pub fn add(
         &mut self,
         rel_table: &str,
         from_id: &str,

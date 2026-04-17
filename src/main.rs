@@ -23,14 +23,17 @@ mod graph_store;
 mod indexer;
 mod lsp_client;
 mod lsp_resolver;
+mod macro_expansion;
 mod parser;
 mod prd_input;
 mod prd_validator;
 mod resolver;
+mod resolver_layers;
 mod rust_parser;
 mod search;
 mod security_gates;
 mod semantic_diff;
+mod stdlib_index;
 mod tool_schemas;
 
 use serde::{Deserialize, Serialize};
@@ -3220,6 +3223,11 @@ fn rel_table_triples() -> &'static [(&'static str, &'static str, &'static str)] 
         ("Uses_Field_Enum", "Field", "Enum"),
         ("Uses_Field_Trait", "Field", "Trait"),
         ("Uses_Field_TypeAlias", "Field", "TypeAlias"),
+        // 3b-v2 Layer 4/5 tables — source: stages/stage-3b-v2.md §5
+        ("Calls_Function_StdlibSymbol", "Function", "StdlibSymbol"),
+        ("Calls_Method_StdlibSymbol", "Method", "StdlibSymbol"),
+        ("Implements_Struct_StdlibSymbol", "Struct", "StdlibSymbol"),
+        ("Implements_Enum_StdlibSymbol", "Enum", "StdlibSymbol"),
         // 3c MemberOf tables
         ("MemberOf_Function_Community", "Function", "Community"),
         ("MemberOf_Method_Community", "Method", "Community"),

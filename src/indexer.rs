@@ -554,6 +554,9 @@ fn is_valid_rel_table(name: &str) -> bool {
         "Uses_Method_Trait", "Uses_Method_TypeAlias", "Uses_Struct_Struct",
         "Uses_Struct_Enum", "Uses_Struct_Trait", "Uses_Field_Struct",
         "Uses_Field_Enum", "Uses_Field_Trait", "Uses_Field_TypeAlias",
+        // 3b-v2 Layer 4/5 — source: stages/stage-3b-v2.md §5
+        "Calls_Function_StdlibSymbol", "Calls_Method_StdlibSymbol",
+        "Implements_Struct_StdlibSymbol", "Implements_Enum_StdlibSymbol",
     ];
     KNOWN.contains(&name)
 }

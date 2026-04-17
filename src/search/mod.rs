@@ -786,6 +786,13 @@ fn find_related_out(store: &GraphStore, escaped: &str, prefix: &str) -> Vec<Rela
     let mut related = Vec::new();
     for &(rel, from_label, to_label) in crate::graph_store::REL_TABLES {
         if !rel.starts_with(prefix) { continue; }
+        // source: stages/stage-3b-v2.md §5 — StdlibSymbol targets are
+        // infrastructure-only (used for analysis + query_graph precision
+        // metrics) and explicitly excluded from the flat get_context
+        // calls/called_by result. Agents asking "what does X call?" expect
+        // user-code callees, not every framework/std method implicitly
+        // invoked.
+        if to_label == crate::graph_store::NODE_STDLIB_SYMBOL { continue; }
         let cypher = format!(
             "MATCH (a:{from_label})-[:{rel}]->(b:{to_label}) \
              WHERE a.qualified_name = '{escaped}' OR a.id = '{escaped}' \
@@ -810,6 +817,8 @@ fn find_related_in(store: &GraphStore, escaped: &str, prefix: &str) -> Vec<Relat
     let mut related = Vec::new();
     for &(rel, from_label, to_label) in crate::graph_store::REL_TABLES {
         if !rel.starts_with(prefix) { continue; }
+        // source: see find_related_out — symmetric exclusion.
+        if to_label == crate::graph_store::NODE_STDLIB_SYMBOL { continue; }
         let cypher = format!(
             "MATCH (a:{from_label})-[:{rel}]->(b:{to_label}) \
              WHERE b.qualified_name = '{escaped}' OR b.id = '{escaped}' \

@@ -30,6 +30,7 @@ pub const NODE_IMPORT: &str = "Import"; // source: stages/stage-3.md §schema
 pub const NODE_CALL_SITE: &str = "CallSite"; // source: stages/stage-3.md §schema
 pub const NODE_COMMUNITY: &str = "Community"; // source: stages/stage-3c.md §4.1
 pub const NODE_PROCESS: &str = "Process"; // source: stages/stage-3c.md §4.1
+pub const NODE_STDLIB_SYMBOL: &str = "StdlibSymbol"; // source: stages/stage-3b-v2.md §5 Layer 5
 
 // ---------------------------------------------------------------------------
 // Edge kinds — source: stages/stage-3.md §schema (Shannon spec, 3a subset)
@@ -366,7 +367,7 @@ const NODE_LABELS: &[&str] = &[
     NODE_DIRECTORY, NODE_FILE, NODE_MODULE, NODE_FUNCTION, NODE_METHOD,
     NODE_STRUCT, NODE_ENUM, NODE_VARIANT, NODE_TRAIT, NODE_FIELD,
     NODE_CONSTANT, NODE_TYPE_ALIAS, NODE_IMPORT, NODE_CALL_SITE,
-    NODE_COMMUNITY, NODE_PROCESS,
+    NODE_COMMUNITY, NODE_PROCESS, NODE_STDLIB_SYMBOL,
 ];
 
 /// Single source of truth for all relationship tables: (name, from, to).
@@ -446,6 +447,13 @@ pub const REL_TABLES: &[(&str, &str, &str)] = &[
     ("Uses_Field_Enum", NODE_FIELD, NODE_ENUM),
     ("Uses_Field_Trait", NODE_FIELD, NODE_TRAIT),
     ("Uses_Field_TypeAlias", NODE_FIELD, NODE_TYPE_ALIAS),
+    // 3b-v2 Layer 5 (stdlib index) + Layer 4 (macro expansion) — source:
+    // stages/stage-3b-v2.md §5. Stdlib targets carry resolution_method
+    // = "stdlib-index" (confidence 0.95) or "macro-expansion" (0.85).
+    ("Calls_Function_StdlibSymbol", NODE_FUNCTION, NODE_STDLIB_SYMBOL),
+    ("Calls_Method_StdlibSymbol", NODE_METHOD, NODE_STDLIB_SYMBOL),
+    ("Implements_Struct_StdlibSymbol", NODE_STRUCT, NODE_STDLIB_SYMBOL),
+    ("Implements_Enum_StdlibSymbol", NODE_ENUM, NODE_STDLIB_SYMBOL),
     // 3c MemberOf — source: stages/stage-3c.md §4.2
     ("MemberOf_Function_Community", NODE_FUNCTION, NODE_COMMUNITY),
     ("MemberOf_Method_Community", NODE_METHOD, NODE_COMMUNITY),
@@ -503,6 +511,11 @@ fn node_table_ddl() -> Vec<String> {
             "id STRING, name STRING, entry_point_id STRING, \
              entry_kind STRING, entry_confidence DOUBLE, \
              depth INT64, symbol_count INT64"),
+        // source: stages/stage-3b-v2.md §5 Layer 5 — StdlibSymbol carries
+        // language + canonical_path (= id) + receiver_type + name.
+        ddl_node(NODE_STDLIB_SYMBOL,
+            "id STRING, name STRING, language STRING, \
+             receiver_type STRING, canonical_path STRING"),
     ]
 }
 
