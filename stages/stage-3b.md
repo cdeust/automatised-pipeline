@@ -245,6 +245,14 @@ Deferred to 3b-v2 (LSP integration):
 - **Re-exports:** `pub use foo::Bar` — the re-export chain requires transitive resolution.
 - **External crate resolution:** `use serde::Serialize` — the target is outside the indexed graph.
 
+### 7.1 Resolution-rate calibration (not a bug, a ceiling)
+
+Measured on the pipeline's own Rust codebase (~12K LOC, 3189 graph nodes, 1277 edges via `analyze_codebase`) on 2026-04-17: **~46% resolution rate**. The remaining ~54% is the classes enumerated above — std-lib calls (we intentionally stop at the project root), macro-expanded code, `dyn Trait` dispatch, and method calls on inferred types.
+
+Treat this as the baseline to detect regressions: a drop below ~40% on a comparable Rust codebase indicates a real resolver bug. Higher rates require LSP integration (`lsp_resolve`, already shipped as a separate tool per 3b-v2) — rust-analyzer / pyright / typescript-language-server fill in exactly the categories listed above.
+
+This is the honest ceiling of type-checker-free static analysis. Source: issue #1 resolution + verified on real codebase.
+
 ---
 
 ## 8. Implementation steps (Simon-style)
