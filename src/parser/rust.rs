@@ -468,7 +468,30 @@ fn extract_use(ctx: &mut ExtractCtx, node: Node, scope: &str) {
         Some(a) => a,
         None => return,
     };
-    let (path, alias, is_glob) = parse_use_argument(ctx.source, arg);
+    // source: tree-sitter-rust grammar — use_declaration::argument may be any
+    // of { identifier, scoped_identifier, use_list, scoped_use_list,
+    // use_as_clause, use_wildcard }. Brace lists expand into multiple atomic
+    // Import nodes so downstream consumers can match individual leaves.
+    let leaves = collect_use_leaves(ctx.source, arg, "");
+    let start_line = node.start_position().row as u64 + 1;
+    let end_line = node.end_position().row as u64 + 1;
+    let visibility = extract_visibility(ctx.source, node);
+    for (path, alias, is_glob) in leaves {
+        emit_import(ctx, scope, path, alias, is_glob, start_line, end_line, &visibility);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_import(
+    ctx: &mut ExtractCtx,
+    scope: &str,
+    path: String,
+    alias: String,
+    is_glob: bool,
+    start_line: u64,
+    end_line: u64,
+    visibility: &str,
+) {
     if path.is_empty() {
         return;
     }
@@ -484,9 +507,9 @@ fn extract_use(ctx: &mut ExtractCtx, node: Node, scope: &str) {
         label: LABEL_IMPORT.to_string(),
         name: display_name,
         qualified_name: qn.clone(),
-        start_line: node.start_position().row as u64 + 1,
-        end_line: node.end_position().row as u64 + 1,
-        visibility: extract_visibility(ctx.source, node),
+        start_line,
+        end_line,
+        visibility: visibility.to_string(),
         properties: vec![
             ("path".to_string(), path),
             ("alias".to_string(), alias),
@@ -500,21 +523,92 @@ fn extract_use(ctx: &mut ExtractCtx, node: Node, scope: &str) {
     });
 }
 
-fn parse_use_argument(source: &str, node: Node) -> (String, String, bool) {
+/// Walks a `use_declaration` argument subtree and returns one tuple per leaf
+/// import in canonical `(path, alias, is_glob)` form. `prefix` is prepended
+/// (with `::`) to each path string — this is what carries the scope across
+/// nested brace lists like `use a::{b, c::{d, e}};`.
+fn collect_use_leaves(source: &str, node: Node, prefix: &str) -> Vec<(String, String, bool)> {
     match node.kind() {
-        TS_USE_AS_CLAUSE => {
-            let path_node = node.child_by_field_name("path");
-            let alias_node = node.child_by_field_name("alias");
-            let path = path_node.map(|n| node_text(source, n)).unwrap_or_default();
-            let alias = alias_node.map(|n| node_text(source, n)).unwrap_or_default();
-            (path, alias, false)
+        "use_list" => walk_use_list_children(source, node, prefix),
+        "scoped_use_list" => leaf_from_scoped_use_list(source, node, prefix),
+        TS_USE_AS_CLAUSE => vec![leaf_from_use_as_clause(source, node, prefix)],
+        TS_USE_WILDCARD => vec![leaf_from_use_wildcard(source, node, prefix)],
+        _ => vec![leaf_from_identifier(source, node, prefix)],
+    }
+}
+
+fn leaf_from_scoped_use_list(
+    source: &str,
+    node: Node,
+    prefix: &str,
+) -> Vec<(String, String, bool)> {
+    let head = node
+        .child_by_field_name("path")
+        .map(|n| node_text(source, n))
+        .unwrap_or_default();
+    let new_prefix = join_use_path(prefix, &head);
+    match node.child_by_field_name("list") {
+        Some(list) => walk_use_list_children(source, list, &new_prefix),
+        None => Vec::new(),
+    }
+}
+
+fn leaf_from_use_as_clause(source: &str, node: Node, prefix: &str) -> (String, String, bool) {
+    let path = node
+        .child_by_field_name("path")
+        .map(|n| node_text(source, n))
+        .unwrap_or_default();
+    let alias = node
+        .child_by_field_name("alias")
+        .map(|n| node_text(source, n))
+        .unwrap_or_default();
+    (join_use_path(prefix, &path), alias, false)
+}
+
+fn leaf_from_use_wildcard(source: &str, node: Node, prefix: &str) -> (String, String, bool) {
+    // use_wildcard text is `<path>::*` (or just `*` when nested in
+    // a brace list with an outer prefix). Strip the trailing `::*`
+    // if present, otherwise treat the wildcard as attaching to the
+    // current prefix verbatim.
+    let text = node_text(source, node);
+    let stripped = text.trim_end_matches("::*").trim_end_matches('*');
+    let stripped = stripped.trim_end_matches("::");
+    (join_use_path(prefix, stripped), String::new(), true)
+}
+
+fn leaf_from_identifier(source: &str, node: Node, prefix: &str) -> (String, String, bool) {
+    // identifier, scoped_identifier, crate, self, super, etc.
+    // Inside a brace list, `self` refers to the brace-list prefix itself
+    // (`use std::io::{self, BufRead}` → import `std::io` and `std::io::BufRead`).
+    let leaf = node_text(source, node);
+    let path = if leaf == "self" && !prefix.is_empty() {
+        prefix.to_string()
+    } else {
+        join_use_path(prefix, &leaf)
+    };
+    (path, String::new(), false)
+}
+
+fn walk_use_list_children(source: &str, list: Node, prefix: &str) -> Vec<(String, String, bool)> {
+    let mut cursor = list.walk();
+    let mut out: Vec<(String, String, bool)> = Vec::new();
+    for child in list.children(&mut cursor) {
+        // Skip punctuation — `{`, `,`, `}` — by filtering on named children.
+        if !child.is_named() {
+            continue;
         }
-        TS_USE_WILDCARD => {
-            let text = node_text(source, node);
-            let path = text.trim_end_matches("::*").to_string();
-            (path, String::new(), true)
-        }
-        _ => (node_text(source, node), String::new(), false),
+        out.extend(collect_use_leaves(source, child, prefix));
+    }
+    out
+}
+
+fn join_use_path(prefix: &str, tail: &str) -> String {
+    if prefix.is_empty() {
+        tail.to_string()
+    } else if tail.is_empty() {
+        prefix.to_string()
+    } else {
+        format!("{prefix}::{tail}")
     }
 }
 
@@ -745,6 +839,81 @@ fn private_fn() {}
         assert_eq!(find("crate_fn"), "pub(crate)");
         assert_eq!(find("super_fn"), "pub(super)");
         assert_eq!(find("private_fn"), "");
+    }
+
+    #[test]
+    fn test_parse_multi_brace_use() {
+        // Multi-brace `use` lists must expand into one Import per leaf so
+        // that q9 (imports in file) and q14 (unresolved externals) can match
+        // individual symbols — not the raw brace substring.
+        let src = r#"
+use std::collections::{HashMap, HashSet};
+use serde::{Deserialize, Serialize as Ser};
+use std::io::{self, BufRead};
+use a::b::*;
+use a::{b, c::{d, e}};
+"#;
+        let result = parse_rust_file(src, "test.rs").expect("parse");
+        let import_names: Vec<&str> = result
+            .nodes
+            .iter()
+            .filter(|n| n.label == "Import")
+            .map(|n| n.name.as_str())
+            .collect();
+
+        // HashMap / HashSet
+        assert!(
+            import_names.contains(&"std::collections::HashMap"),
+            "missing std::collections::HashMap in {import_names:?}"
+        );
+        assert!(
+            import_names.contains(&"std::collections::HashSet"),
+            "missing std::collections::HashSet in {import_names:?}"
+        );
+        // alias: Serialize as Ser → display_name becomes the alias
+        assert!(
+            import_names.contains(&"Ser"),
+            "aliased import should use alias as display name, got {import_names:?}"
+        );
+        // Deserialize is not aliased
+        assert!(
+            import_names.contains(&"serde::Deserialize"),
+            "missing serde::Deserialize in {import_names:?}"
+        );
+        // `self` in brace list resolves to the prefix itself
+        assert!(
+            import_names.contains(&"std::io"),
+            "missing std::io (from use std::io::{{self, ..}}) in {import_names:?}"
+        );
+        assert!(
+            import_names.contains(&"std::io::BufRead"),
+            "missing std::io::BufRead in {import_names:?}"
+        );
+        // nested brace list
+        assert!(
+            import_names.contains(&"a::b"),
+            "missing a::b in {import_names:?}"
+        );
+        assert!(
+            import_names.contains(&"a::c::d"),
+            "missing a::c::d in {import_names:?}"
+        );
+        assert!(
+            import_names.contains(&"a::c::e"),
+            "missing a::c::e in {import_names:?}"
+        );
+        // Glob: display name ends in ::*
+        assert!(
+            import_names.contains(&"a::b::*"),
+            "missing glob a::b::* in {import_names:?}"
+        );
+        // Regression: no entry should still contain a raw brace.
+        for n in &import_names {
+            assert!(
+                !n.contains('{') && !n.contains('}'),
+                "raw brace leaked into Import name: {n}"
+            );
+        }
     }
 
     #[test]

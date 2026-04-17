@@ -1,0 +1,4 @@
+name = "kotlin-coroutines"
+language = "kotlin"
+path = "./src"
+description = "STUB — to be populated with a kotlinx.coroutines slice. Ground truth is TODO. Requires a Kotlin adapter in the analyzer (not yet shipped — see stage-3b-v2.md §4.2)."

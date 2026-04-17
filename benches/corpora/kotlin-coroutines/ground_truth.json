@@ -1,0 +1,7 @@
+{
+  "corpus": "kotlin-coroutines",
+  "language": "kotlin",
+  "version": "0",
+  "_comment": "TODO: labels pending. Kotlin adapter is not implemented yet (stage-3b-v2.md §4.2).",
+  "labels": []
+}

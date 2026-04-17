@@ -1,0 +1,7 @@
+{
+  "corpus": "go-kubectl",
+  "language": "go",
+  "version": "0",
+  "_comment": "TODO: labels pending. Go adapter is not implemented yet.",
+  "labels": []
+}

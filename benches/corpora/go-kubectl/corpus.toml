@@ -1,0 +1,4 @@
+name = "go-kubectl"
+language = "go"
+path = "./src"
+description = "STUB — to be populated with a kubernetes/kubectl slice. Requires a Go adapter in the analyzer (not yet shipped — see stage-3b-v2.md §4.2)."

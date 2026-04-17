@@ -1,3 +1,9 @@
+[workspace]
+# source: benches/harness is the end-result evaluation harness (stage-3b-v2 §2).
+# Lives as a workspace member so its deps (clap, tempfile) stay out of the
+# main crate.
+members = [".", "benches/harness"]
+
 [package]
 name = "ai-architect-mcp"
 version = "0.0.1"

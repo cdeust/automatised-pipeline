@@ -529,6 +529,7 @@ fn is_valid_rel_table(name: &str) -> bool {
         "Contains_Dir_File", "Contains_Dir_Dir", "Contains_File_Module",
         "Defines_File_Function", "Defines_File_Struct", "Defines_File_Enum",
         "Defines_File_Trait", "Defines_File_Constant", "Defines_File_TypeAlias",
+        "Defines_File_Import", "Defines_Module_Import",
         "Defines_Module_Function", "Defines_Module_Struct", "Defines_Module_Enum",
         "Defines_Module_Trait", "Defines_Module_Constant", "Defines_Module_TypeAlias",
         "HasMethod_Struct_Method", "HasMethod_Enum_Method", "HasMethod_Trait_Method",

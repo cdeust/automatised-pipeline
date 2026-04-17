@@ -1,0 +1,4 @@
+name = "rust-self"
+language = "rust"
+path = "../../../src"
+description = "The ai-architect-mcp crate's own src/ — self-referential corpus for bootstrapping the end-result harness."

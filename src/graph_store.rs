@@ -386,6 +386,10 @@ pub const REL_TABLES: &[(&str, &str, &str)] = &[
     ("Defines_File_Trait", NODE_FILE, NODE_TRAIT),
     ("Defines_File_Constant", NODE_FILE, NODE_CONSTANT),
     ("Defines_File_TypeAlias", NODE_FILE, NODE_TYPE_ALIAS),
+    // source: B1 fix — Q9/Q14 expect File->Import edges, and resolver
+    // also needs to walk a Module->Import parent for mod-nested uses.
+    ("Defines_File_Import", NODE_FILE, NODE_IMPORT),
+    ("Defines_Module_Import", NODE_MODULE, NODE_IMPORT),
     ("Defines_Module_Function", NODE_MODULE, NODE_FUNCTION),
     ("Defines_Module_Struct", NODE_MODULE, NODE_STRUCT),
     ("Defines_Module_Enum", NODE_MODULE, NODE_ENUM),

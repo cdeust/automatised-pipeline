@@ -1,0 +1,7 @@
+{
+  "corpus": "python-fastapi",
+  "language": "python",
+  "version": "0",
+  "_comment": "TODO: labels pending. This corpus will use tiangolo/fastapi as a git submodule. See benches/README.md for labeling workflow.",
+  "labels": []
+}

@@ -1,0 +1,4 @@
+name = "python-fastapi"
+language = "python"
+path = "./src"
+description = "STUB — to be populated with tiangolo/fastapi as a git submodule (see benches/README.md §Add a corpus). Ground truth is TODO."

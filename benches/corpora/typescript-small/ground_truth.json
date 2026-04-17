@@ -1,0 +1,112 @@
+{
+  "corpus": "typescript-small",
+  "language": "typescript",
+  "version": "1",
+  "_comment": "Hand labels against the synthetic TS corpus. The files are hand-authored so every label can be verified by reading them. QNs follow `<rel_path>::<name>` convention.",
+  "labels": [
+    {
+      "query_id": "q1",
+      "input": { "query": "ConsoleLogger", "label_filter": "Struct" },
+      "expected": { "qualified_name": "logger.ts::ConsoleLogger" }
+    },
+    {
+      "query_id": "q1",
+      "input": { "query": "NullLogger", "label_filter": "Struct" },
+      "expected": { "qualified_name": "logger.ts::NullLogger" }
+    },
+    {
+      "query_id": "q1",
+      "input": { "query": "MemoryStore", "label_filter": "Struct" },
+      "expected": { "qualified_name": "store.ts::MemoryStore" }
+    },
+    {
+      "query_id": "q1",
+      "input": { "query": "App", "label_filter": "Struct" },
+      "expected": { "qualified_name": "app.ts::App" }
+    },
+
+    {
+      "query_id": "q2",
+      "input": { "query": "Logger", "label_filter": "Trait" },
+      "expected": { "qualified_name": "logger.ts::Logger" }
+    },
+    {
+      "query_id": "q2",
+      "input": { "query": "Store", "label_filter": "Trait" },
+      "expected": { "qualified_name": "store.ts::Store" }
+    },
+
+    {
+      "query_id": "q3",
+      "input": { "query": "main", "label_filter": "Function" },
+      "expected": { "qualified_name": "app.ts::main" }
+    },
+
+    {
+      "query_id": "q4",
+      "input": { "qualified_name": "logger.ts::ConsoleLogger" },
+      "expected": {
+        "callers": ["app.ts::App"]
+      }
+    },
+    {
+      "query_id": "q4",
+      "input": { "qualified_name": "store.ts::MemoryStore" },
+      "expected": {
+        "callers": ["app.ts::App"]
+      }
+    },
+
+    {
+      "query_id": "q5",
+      "input": { "qualified_name": "app.ts::main" },
+      "expected": {
+        "callees": ["app.ts::App"]
+      }
+    },
+
+    {
+      "query_id": "q6",
+      "input": { "qualified_name": "logger.ts::Logger" },
+      "expected": {
+        "implementors": [
+          "logger.ts::ConsoleLogger",
+          "logger.ts::NullLogger"
+        ]
+      }
+    },
+    {
+      "query_id": "q6",
+      "input": { "qualified_name": "store.ts::Store" },
+      "expected": {
+        "implementors": [
+          "store.ts::MemoryStore"
+        ]
+      }
+    },
+
+    {
+      "query_id": "q7",
+      "input": { "qualified_name": "logger.ts::Logger" },
+      "expected": {
+        "affected": []
+      }
+    },
+
+    {
+      "query_id": "q10",
+      "input": { "qualified_name": "logger.ts::ConsoleLogger" },
+      "expected": { "qualified_name": "logger.ts::ConsoleLogger" }
+    },
+    {
+      "query_id": "q10",
+      "input": { "qualified_name": "store.ts::MemoryStore" },
+      "expected": { "qualified_name": "store.ts::MemoryStore" }
+    },
+    {
+      "query_id": "q10",
+      "input": { "qualified_name": "app.ts::App" },
+      "expected": { "qualified_name": "app.ts::App" }
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+name = "typescript-small"
+language = "typescript"
+path = "./src"
+description = "Small synthetic TypeScript project — classes, interfaces, imports, and cross-file calls. Hand-authored to exercise the TS adapter's key concepts without pulling a submodule."

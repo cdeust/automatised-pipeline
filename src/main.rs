@@ -2228,8 +2228,22 @@ fn do_cluster_graph(arguments: &Value) -> Result<Value, String> {
 
     let store = graph_store::GraphStore::open_or_create(graph_path)?;
     let result = clustering::cluster_graph(&store, gamma)?;
+    let memberships = clustering::collect_cluster_memberships(&store)?;
 
-    Ok(json!({
+    let clusters: Vec<Value> = memberships
+        .entries
+        .iter()
+        .map(|m| {
+            json!({
+                "qualified_name": m.qualified_name,
+                "community_id": m.community_id,
+                "qn": m.qualified_name,
+                "cluster_id": m.cluster_id,
+            })
+        })
+        .collect();
+
+    let mut body = json!({
         "stage": 3,
         "status": "ok",
         "tool": "cluster_graph",
@@ -2237,7 +2251,13 @@ fn do_cluster_graph(arguments: &Value) -> Result<Value, String> {
         "modularity": format!("{:.6}", result.modularity),
         "process_count": result.processes,
         "elapsed_ms": result.elapsed_ms,
-    }))
+        "clusters": clusters,
+        "total_memberships": memberships.total,
+    });
+    if let Some(n) = memberships.truncated_at {
+        body["clusters_truncated_at"] = json!(n);
+    }
+    Ok(body)
 }
 
 // ---------------------------------------------------------------------------
@@ -3142,6 +3162,11 @@ fn rel_table_triples() -> &'static [(&'static str, &'static str, &'static str)] 
         ("Defines_File_Trait", "File", "Trait"),
         ("Defines_File_Constant", "File", "Constant"),
         ("Defines_File_TypeAlias", "File", "TypeAlias"),
+        // source: B1 fix — Q9/Q14 expect File->Import edges but the rel
+        // table was never registered, so Defines edges from File to Import
+        // were silently dropped by is_valid_rel_table.
+        ("Defines_File_Import", "File", "Import"),
+        ("Defines_Module_Import", "Module", "Import"),
         ("Defines_Module_Function", "Module", "Function"),
         ("Defines_Module_Struct", "Module", "Struct"),
         ("Defines_Module_Enum", "Module", "Enum"),

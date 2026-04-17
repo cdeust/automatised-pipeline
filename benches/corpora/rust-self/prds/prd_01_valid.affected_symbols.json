@@ -1,0 +1,10 @@
+{
+  "affected_symbols": [
+    {
+      "qualified_name": "main.rs::handle_tool_call",
+      "change_kind": "modify",
+      "rationale": "Add structured logging per tool invocation."
+    }
+  ],
+  "scope_claims": []
+}

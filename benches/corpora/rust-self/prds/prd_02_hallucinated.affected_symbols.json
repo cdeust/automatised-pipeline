@@ -1,0 +1,10 @@
+{
+  "affected_symbols": [
+    {
+      "qualified_name": "main.rs::totally_fake_symbol_99",
+      "change_kind": "rename",
+      "rationale": "Rename a symbol that does not exist in the graph — must flag symbol_hallucination."
+    }
+  ],
+  "scope_claims": []
+}

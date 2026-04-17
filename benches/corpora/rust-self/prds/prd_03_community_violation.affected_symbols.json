@@ -1,0 +1,22 @@
+{
+  "affected_symbols": [
+    {
+      "qualified_name": "parser/rust.rs::parse_rust_file",
+      "change_kind": "modify",
+      "rationale": "Parser refactor — touches parser community."
+    },
+    {
+      "qualified_name": "search/mod.rs::search_graph",
+      "change_kind": "modify",
+      "rationale": "But also touches search community — scope violation."
+    },
+    {
+      "qualified_name": "clustering.rs::cluster_graph",
+      "change_kind": "modify",
+      "rationale": "And clustering community — third affected community."
+    }
+  ],
+  "scope_claims": [
+    { "kind": "community_scope", "assertion": "parser-only" }
+  ]
+}

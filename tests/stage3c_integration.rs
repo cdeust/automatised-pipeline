@@ -179,3 +179,76 @@ fn test_clustering_and_process_tracing() {
 
     let _ = fs::remove_dir_all(&tmp_root);
 }
+
+#[test]
+fn test_cluster_graph_returns_mapping() {
+    // Regression for B2: `cluster_graph` must surface a per-symbol
+    // community membership mapping, not just counts/modularity. Without
+    // this, the harness Q12 scorer (adjusted Rand index) has nothing to
+    // compare against and collapses to 0.
+    let tmp_root = std::env::temp_dir().join(format!(
+        "stage3c_mapping_{}", std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&tmp_root);
+
+    let fixture_dir = tmp_root.join("fixture/src");
+    fs::create_dir_all(&fixture_dir).expect("create fixture");
+    fs::write(fixture_dir.join("main.rs"), FIXTURE_MAIN).unwrap();
+    fs::write(fixture_dir.join("service.rs"), FIXTURE_SERVICE).unwrap();
+    fs::write(fixture_dir.join("helpers.rs"), FIXTURE_HELPERS).unwrap();
+
+    let graph_dir = tmp_root.join("graph");
+    indexer::index_codebase(&fixture_dir, &graph_dir).expect("index_codebase");
+    let store = GraphStore::open_or_create(&graph_dir).unwrap();
+    resolver::resolve_graph(&store).expect("resolve_graph");
+    clustering::cluster_graph(&store, 1.0).expect("cluster_graph");
+
+    let memberships =
+        clustering::collect_cluster_memberships(&store).expect("collect");
+
+    assert!(
+        !memberships.entries.is_empty(),
+        "clusters mapping must be non-empty after cluster_graph persistence"
+    );
+    assert_eq!(
+        memberships.truncated_at, None,
+        "fixture has <10k symbols, truncation flag must not trigger"
+    );
+    assert_eq!(memberships.entries.len(), memberships.total);
+
+    // Every entry must carry a real qualified_name and a non-negative
+    // cluster id extracted from the community_id suffix.
+    for m in &memberships.entries {
+        assert!(
+            !m.qualified_name.is_empty(),
+            "empty qualified_name in membership"
+        );
+        assert!(
+            m.community_id.starts_with("community::louvain::"),
+            "unexpected community_id shape: {}",
+            m.community_id
+        );
+        assert!(
+            m.cluster_id >= 0,
+            "cluster_id failed to parse from {}",
+            m.community_id
+        );
+    }
+
+    // Spot-check: the fixture's known function symbols show up.
+    let qns: Vec<&str> = memberships
+        .entries
+        .iter()
+        .map(|m| m.qualified_name.as_str())
+        .collect();
+    assert!(
+        qns.iter().any(|q| q.ends_with("::main")),
+        "main symbol missing from cluster mapping: {qns:?}"
+    );
+    assert!(
+        qns.iter().any(|q| q.ends_with("::process_data")),
+        "process_data symbol missing from cluster mapping: {qns:?}"
+    );
+
+    let _ = fs::remove_dir_all(&tmp_root);
+}
