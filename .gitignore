@@ -2,4 +2,5 @@
 Cargo.lock
 .DS_Store
 .claude/settings.local.json
+.claude/session-cache.json
 benches/runs/
