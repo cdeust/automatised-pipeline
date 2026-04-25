@@ -1,0 +1,36 @@
+{
+  "name": "automatised-pipeline-marketplace",
+  "owner": {
+    "name": "Clement Deust",
+    "email": "admin@ai-architect.tools"
+  },
+  "metadata": {
+    "description": "automatised-pipeline — Rust MCP that indexes any Rust / Python / TypeScript codebase into a LadybugDB property graph and exposes 23 tools (index_codebase, query_graph, impact, semantic-diff) to agents.",
+    "version": "0.0.1"
+  },
+  "plugins": [
+    {
+      "name": "automatised-pipeline",
+      "source": "./",
+      "description": "23 MCP tools · LadybugDB property graph · Leiden communities · BM25+TF-IDF+RRF search · 220 tests",
+      "version": "0.0.1",
+      "author": {
+        "name": "Clement Deust",
+        "email": "admin@ai-architect.tools"
+      },
+      "homepage": "https://github.com/cdeust/automatised-pipeline",
+      "repository": "https://github.com/cdeust/automatised-pipeline",
+      "license": "MIT",
+      "keywords": [
+        "mcp",
+        "claude-code",
+        "rust",
+        "codebase-intelligence",
+        "property-graph",
+        "ladybugdb",
+        "ai-architect"
+      ],
+      "category": "development"
+    }
+  ]
+}
