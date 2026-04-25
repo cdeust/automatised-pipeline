@@ -1,0 +1,46 @@
+MIT License
+
+automatised-pipeline — a Rust MCP server that indexes any Rust / Python /
+TypeScript codebase into a LadybugDB property graph, resolves imports and
+call chains across files, detects functional communities via Leiden-class
+algorithms, traces execution flows from entry points, builds a hybrid
+BM25 + sparse TF-IDF + RRF search index, and exposes all of it to AI
+agents through twenty-three MCP tools. Read-only intelligence: the server
+never writes code, opens PRs, or runs CI; it tells the system what is
+true about the code so the next stage can reason without guessing. Part
+of the ai-architect ecosystem (https://github.com/cdeust/Cortex,
+ https://github.com/cdeust/zetetic-team-subagents,
+ https://github.com/cdeust/prd-spec-generator).
+
+Copyright (c) 2026 Clément Deust
+
+This software is the independent work of Clément Deust. It was developed
+outside any employment relationship and is not affiliated with, endorsed
+by, or owned by any past or present employer.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+The graph-theoretic and information-retrieval algorithms used in this
+software (Louvain community detection with C2 repair, BM25, RRF rank
+fusion, tree-sitter AST parsing, Tarjan strongly-connected-components)
+are sourced from published research; citations are documented inline in
+the source via `// source:` annotations and in the project's `docs/`
+directory. The MIT license covers this implementation; it does not
+assert ownership over the underlying algorithms, which remain
+attributable to their original authors.
