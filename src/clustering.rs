@@ -631,6 +631,14 @@ fn persist_process_node(
         ("symbol_count", &visited.len().to_string()),
     ])?;
     let ep_rel = format!("EntryPointOf_{}_Process", entry.label);
+    // EntryPointOf tables only defined for Function/Method per REL_TABLES.
+    if !crate::graph_store::is_known_rel_table(&ep_rel) {
+        eprintln!(
+            "clustering: skipping EntryPointOf for non-callable label {}",
+            entry.label
+        );
+        return Ok(());
+    }
     store.insert_edge(&ep_rel, &entry.id, process_id, &[
         ("confidence", &entry.confidence.to_string()),
     ])
@@ -653,6 +661,12 @@ fn persist_participates_in(
             None => continue,
         };
         let rel = format!("ParticipatesIn_{lbl}_Process");
+        // ParticipatesIn tables only defined for Function/Method per
+        // REL_TABLES. Filter at producer side instead of swallowing the
+        // bulk_insert error (which previously dropped real edges too).
+        if !crate::graph_store::is_known_rel_table(&rel) {
+            continue;
+        }
         by_rel
             .entry(rel)
             .or_default()
@@ -663,8 +677,7 @@ fn persist_participates_in(
             ));
     }
     for (rel, edges) in &by_rel {
-        // Ignore errors: some labels may lack a ParticipatesIn table.
-        let _ = store.bulk_insert_edges(rel, edges);
+        store.bulk_insert_edges(rel, edges)?;
     }
     Ok(())
 }

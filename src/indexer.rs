@@ -341,11 +341,29 @@ fn insert_parsed_nodes(
     // Group nodes by label so we can bulk-insert each label's batch in one
     // (or a few, chunked) Cypher CREATE ..., ..., ... statements.
     // source: Fermi audit — per-row CREATE was ~100x slower than batched.
+    //
+    // Defensive dedup: parsers should produce unique ids per node, but a
+    // bug there used to abort the whole file's bulk insert (LadybugDB
+    // rejects duplicate primary keys atomically). We dedup by id within
+    // the batch and log per-label dropped-duplicate counts so the file
+    // still indexes even when the parser slips up.
     let mut by_label: HashMap<String, Vec<Vec<(String, String)>>> = HashMap::new();
+    let mut seen_ids: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    let mut dropped_dups: HashMap<String, u64> = HashMap::new();
     for node in nodes {
+        if !seen_ids.insert(node.qualified_name.clone()) {
+            *dropped_dups.entry(node.label.clone()).or_default() += 1;
+            continue;
+        }
         label_by_qn.insert(node.qualified_name.clone(), node.label.clone());
         let props = build_node_properties(node);
         by_label.entry(node.label.clone()).or_default().push(props);
+    }
+    for (label, count) in &dropped_dups {
+        eprintln!(
+            "indexer: dropped {count} duplicate-id {label} node(s) within batch"
+        );
     }
     for (label, rows) in &by_label {
         store.bulk_insert_nodes(label, rows)?;
@@ -490,7 +508,8 @@ fn resolve_has_method_table(
     label_by_qn: &HashMap<String, String>,
 ) -> Option<String> {
     let from_label = lookup_label_among(from_qn, label_by_qn, &["Struct", "Enum", "Trait"])?;
-    Some(format!("HasMethod_{from_label}_Method"))
+    let table = format!("HasMethod_{from_label}_Method");
+    if is_valid_rel_table(&table) { Some(table) } else { None }
 }
 
 fn resolve_has_field_table(
@@ -498,7 +517,8 @@ fn resolve_has_field_table(
     label_by_qn: &HashMap<String, String>,
 ) -> Option<String> {
     let from_label = lookup_label_among(from_qn, label_by_qn, &["Struct", "Enum"])?;
-    Some(format!("HasField_{from_label}_Field"))
+    let table = format!("HasField_{from_label}_Field");
+    if is_valid_rel_table(&table) { Some(table) } else { None }
 }
 
 // ---------------------------------------------------------------------------
@@ -520,45 +540,10 @@ fn lookup_label_among(
     }
 }
 
-/// Checks if a rel table name exists in the known schema.
+/// Checks if a rel table name exists in the known schema. Single source
+/// of truth is `graph_store::REL_TABLES`; this thin shim avoids drift.
 fn is_valid_rel_table(name: &str) -> bool {
-    // Must match one of the REL_TABLES entries in graph_store.
-    // We check by name convention rather than importing the private const.
-    const KNOWN: &[&str] = &[
-        // 3a tables
-        "Contains_Dir_File", "Contains_Dir_Dir", "Contains_File_Module",
-        "Defines_File_Function", "Defines_File_Struct", "Defines_File_Enum",
-        "Defines_File_Trait", "Defines_File_Constant", "Defines_File_TypeAlias",
-        "Defines_File_Import", "Defines_Module_Import",
-        "Defines_Module_Function", "Defines_Module_Struct", "Defines_Module_Enum",
-        "Defines_Module_Trait", "Defines_Module_Constant", "Defines_Module_TypeAlias",
-        "HasMethod_Struct_Method", "HasMethod_Enum_Method", "HasMethod_Trait_Method",
-        "HasField_Struct_Field", "HasField_Enum_Field",
-        "HasVariant_Enum_Variant",
-        // 3b Imports tables — source: stages/stage-3b.md §3
-        "Imports_File_File", "Imports_File_Module", "Imports_File_Function",
-        "Imports_File_Struct", "Imports_File_Enum", "Imports_File_Trait",
-        "Imports_File_Constant", "Imports_File_TypeAlias",
-        "Imports_Module_Function", "Imports_Module_Struct", "Imports_Module_Enum",
-        "Imports_Module_Trait", "Imports_Module_Constant", "Imports_Module_TypeAlias",
-        // 3b Calls tables
-        "Calls_Function_Function", "Calls_Function_Method",
-        "Calls_Method_Function", "Calls_Method_Method",
-        // 3b Implements tables
-        "Implements_Struct_Trait", "Implements_Enum_Trait",
-        // 3b Extends table
-        "Extends_Trait_Trait",
-        // 3b Uses tables
-        "Uses_Function_Struct", "Uses_Function_Enum", "Uses_Function_Trait",
-        "Uses_Function_TypeAlias", "Uses_Method_Struct", "Uses_Method_Enum",
-        "Uses_Method_Trait", "Uses_Method_TypeAlias", "Uses_Struct_Struct",
-        "Uses_Struct_Enum", "Uses_Struct_Trait", "Uses_Field_Struct",
-        "Uses_Field_Enum", "Uses_Field_Trait", "Uses_Field_TypeAlias",
-        // 3b-v2 Layer 4/5 — source: stages/stage-3b-v2.md §5
-        "Calls_Function_StdlibSymbol", "Calls_Method_StdlibSymbol",
-        "Implements_Struct_StdlibSymbol", "Implements_Enum_StdlibSymbol",
-    ];
-    KNOWN.contains(&name)
+    crate::graph_store::is_known_rel_table(name)
 }
 
 fn relative_path(root: &Path, file: &Path) -> PathBuf {

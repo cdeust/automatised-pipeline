@@ -771,8 +771,11 @@ fn extract_macro_call_site(ctx: &mut ExtractCtx, node: Node, caller_qn: &str) {
     }
     let line = node.start_position().row as u64 + 1;
     let col = node.start_position().column as u64;
+    let start_byte = node.start_byte() as u64;
+    let end_byte = node.end_byte() as u64;
     let marker = format!("{macro_name}!");
-    let cs_id = format!("{caller_qn}::call@{line}:{col}");
+    // Chained calls share start_byte; the (start, end) span is unique.
+    let cs_id = format!("{caller_qn}::call@{line}:{col}#{start_byte}-{end_byte}");
     ctx.nodes.push(ExtractedNode {
         label: LABEL_CALL_SITE.to_string(),
         name: marker.clone(),
@@ -803,7 +806,10 @@ fn extract_single_call_site(ctx: &mut ExtractCtx, node: Node, caller_qn: &str) {
     }
     let line = node.start_position().row as u64 + 1;
     let col = node.start_position().column as u64;
-    let cs_id = format!("{caller_qn}::call@{line}:{col}");
+    // Chained calls share start_byte; (start, end) span is unique.
+    let start_byte = node.start_byte() as u64;
+    let end_byte = node.end_byte() as u64;
+    let cs_id = format!("{caller_qn}::call@{line}:{col}#{start_byte}-{end_byte}");
     ctx.nodes.push(ExtractedNode {
         label: LABEL_CALL_SITE.to_string(),
         name: callee.clone(),

@@ -49,6 +49,7 @@ pub fn parse_python_file(source: &str, file_path: &str) -> Result<ParseResult, S
         file_path,
         nodes: Vec::new(),
         refs: Vec::new(),
+        emitted_qns: std::collections::HashSet::new(),
     };
     extract_top_level(&mut ctx, tree.root_node(), file_path, None);
     Ok(ParseResult {
@@ -67,6 +68,24 @@ struct ExtractCtx<'a> {
     file_path: &'a str,
     nodes: Vec<ExtractedNode>,
     refs: Vec<ExtractedRef>,
+    /// Qualified names already emitted in this file. Used to disambiguate
+    /// Python @property/@setter pairs and other same-named overloads
+    /// (Rust impl Trait for X & inherent impl can also share method names).
+    emitted_qns: std::collections::HashSet<String>,
+}
+
+impl<'a> ExtractCtx<'a> {
+    /// Returns a unique qn: the input if unseen, else `qn@{start_line}` so
+    /// every Method/Function node has a unique primary key while preserving
+    /// the readable name for resolver name-based lookups.
+    fn dedup_qn(&mut self, qn: String, start_line: u64) -> String {
+        if self.emitted_qns.insert(qn.clone()) {
+            return qn;
+        }
+        let unique = format!("{qn}@{start_line}");
+        self.emitted_qns.insert(unique.clone());
+        unique
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -118,7 +137,12 @@ fn extract_function_or_method(
 
     let is_async = is_async_function(ctx.source, node);
     let visibility = python_visibility(&name);
-    let qn = qual(scope, &name);
+    let raw_qn = qual(scope, &name);
+    let start_line = node.start_position().row as u64 + 1;
+    // Disambiguate @property/@setter/@deleter overloads (and any other
+    // legitimately-same-named symbols within the same scope) so each
+    // gets a unique primary key. Resolver name-based lookups still work.
+    let qn = ctx.dedup_qn(raw_qn, start_line);
 
     let mut props = vec![
         ("is_async".to_string(), is_async.to_string()),
@@ -134,7 +158,7 @@ fn extract_function_or_method(
             label: LABEL_METHOD.to_string(),
             name: name.clone(),
             qualified_name: qn.clone(),
-            start_line: node.start_position().row as u64 + 1,
+            start_line,
             end_line: node.end_position().row as u64 + 1,
             visibility,
             properties: props,
@@ -150,7 +174,7 @@ fn extract_function_or_method(
             label: LABEL_FUNCTION.to_string(),
             name: name.clone(),
             qualified_name: qn.clone(),
-            start_line: node.start_position().row as u64 + 1,
+            start_line,
             end_line: node.end_position().row as u64 + 1,
             visibility,
             properties: props,
@@ -437,7 +461,14 @@ fn extract_single_call_site(ctx: &mut ExtractCtx, node: Node, caller_qn: &str) {
     }
     let line = node.start_position().row as u64 + 1;
     let col = node.start_position().column as u64;
-    let cs_id = format!("{caller_qn}::call@{line}:{col}");
+    // Chained calls (f()()) share start_byte because the outer call's
+    // function child is the inner call (same starting token). Use the
+    // (start_byte, end_byte) span — outer call ends after the trailing
+    // ``)``, inner ends earlier — to give every call_expression a unique
+    // primary key while preserving the human-readable line:col prefix.
+    let start_byte = node.start_byte() as u64;
+    let end_byte = node.end_byte() as u64;
+    let cs_id = format!("{caller_qn}::call@{line}:{col}#{start_byte}-{end_byte}");
     ctx.nodes.push(ExtractedNode {
         label: LABEL_CALL_SITE.to_string(),
         name: callee.clone(),

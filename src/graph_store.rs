@@ -585,6 +585,13 @@ fn parse_rel_endpoints(rel_type: &str) -> Result<(&str, &str), String> {
     Err(format!("unknown relationship type: {rel_type}"))
 }
 
+/// Public schema check — single source of truth for "is this a valid rel
+/// table name?" Producers that dynamically format edge type names should
+/// validate against this before insertion to avoid schema-mismatch aborts.
+pub fn is_known_rel_table(name: &str) -> bool {
+    REL_TABLES.iter().any(|(n, _, _)| *n == name)
+}
+
 fn format_props(properties: &[(&str, &str)]) -> String {
     properties
         .iter()
