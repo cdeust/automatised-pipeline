@@ -323,17 +323,18 @@ fn try_add_lsp_edge(
         None => return false,
     };
 
-    // Build the edge type
-    let rel_type = format!("Calls_{}_{}", site.caller_label, target.label);
-
-    // Check the rel type is valid
-    let valid_rels = [
-        "Calls_Function_Function", "Calls_Function_Method",
-        "Calls_Method_Function", "Calls_Method_Method",
-    ];
-    if !valid_rels.contains(&rel_type.as_str()) {
-        return false;
-    }
+    // Build the edge type. Calls is Function|Method -> Function|Method;
+    // ctor/variant/type-use targets degrade to Uses to preserve the
+    // dependency edge instead of dropping it. source: stages/stage-3b.md §2.
+    let rel_type = match (site.caller_label.as_str(), target.label.as_str()) {
+        ("Function" | "Method", "Function" | "Method") => {
+            format!("Calls_{}_{}", site.caller_label, target.label)
+        }
+        ("Function" | "Method", "Struct" | "Enum" | "Trait" | "TypeAlias") => {
+            format!("Uses_{}_{}", site.caller_label, target.label)
+        }
+        _ => return false,
+    };
 
     // Insert edge with LSP-backed confidence (0.9)
     store.insert_edge(

@@ -354,10 +354,43 @@ fn resolve_calls(
 
         match resolve_single_call(idx, file_imports, callee, &file_id) {
             Some(target) => {
-                let rel = format!("Calls_{}_{}", caller_label, target.label);
+                // source: stages/stage-3b.md §2 — Calls is Function|Method
+                // -> Function|Method only. Names resolving to Struct/Enum/
+                // Trait/TypeAlias are tuple-struct ctors / enum-variant
+                // calls / type uses — preserve them as Uses_* edges so the
+                // full dependency chain remains queryable. Dropping them
+                // would hide real dependencies from change_impact/navigate.
                 let conf = if callee.contains("::") { 1.0 } else { 0.9 };
-                if buf.add(&rel, &caller_qn, &target.id, conf, "import-scope-lookup") {
-                    resolved += 1;
+                let (rel_opt, kind) = match target.label.as_str() {
+                    "Function" | "Method" => (
+                        Some(format!("Calls_{}_{}", caller_label, target.label)),
+                        "Calls",
+                    ),
+                    "Struct" | "Enum" | "Trait" | "TypeAlias"
+                        if caller_label == "Function" || caller_label == "Method" =>
+                    {
+                        (
+                            Some(format!("Uses_{}_{}", caller_label, target.label)),
+                            "Uses",
+                        )
+                    }
+                    _ => (None, "Calls"),
+                };
+                match rel_opt {
+                    Some(rel) => {
+                        if buf.add(&rel, &caller_qn, &target.id, conf, "import-scope-lookup") {
+                            resolved += 1;
+                        }
+                    }
+                    None => unresolved.push(UnresolvedRef {
+                        kind: kind.to_string(),
+                        from_id: cs_id.clone(),
+                        target_text: callee.clone(),
+                        reason: format!(
+                            "no rel table for {caller_label} -> {} (callsite-as-call)",
+                            target.label
+                        ),
+                    }),
                 }
             }
             None => unresolved.push(UnresolvedRef {

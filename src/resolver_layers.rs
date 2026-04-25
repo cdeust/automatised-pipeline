@@ -56,6 +56,11 @@ fn expand_macro_calls(
         };
         let caller_qn = caller_from_callsite(cs_id);
         let caller_label = caller_label_of(&caller_qn);
+        // source: stages/stage-3b.md §2 — Calls_*_StdlibSymbol is defined
+        // for Function|Method callers only. Skip non-callable callers.
+        if caller_label != "Function" && caller_label != "Method" {
+            continue;
+        }
         for canonical in expansion.emit_calls {
             ensure_stdlib_symbol(store, created, canonical, "rust")?;
             let rel = format!("Calls_{caller_label}_StdlibSymbol");
