@@ -23,6 +23,17 @@ permissions:
 jobs:
   build:
     name: build (${{ matrix.target_tag }})
+    # Linux targets temporarily disabled pending two upstream code-side
+    # issues observed on the v0.0.1 run (24931717180):
+    #   - linux-x86_64: zstd_sys + a transitive C++ zstd build define
+    #     duplicate symbols. macOS ld64 silently dedupes; Linux rust-lld
+    #     errors. Needs a Cargo.toml dep audit to remove the second copy.
+    #   - linux-aarch64: cross v0.2.5's docker image ships GCC 5.4 which
+    #     fails CXX20 detection for the `lbug` C++ dep. Switch to native
+    #     ``ubuntu-24.04-arm`` runner once the zstd issue is fixed (no
+    #     cross needed).
+    # Re-enable both when the dep tree is clean. Cortex's installer
+    # falls through gracefully when assets for a platform are missing.
     strategy:
       fail-fast: false
       matrix:
@@ -35,14 +46,6 @@ jobs:
             rust_target: x86_64-apple-darwin
             runner: macos-13
             cross: false
-          - target_tag: linux-x86_64
-            rust_target: x86_64-unknown-linux-gnu
-            runner: ubuntu-latest
-            cross: false
-          - target_tag: linux-aarch64
-            rust_target: aarch64-unknown-linux-gnu
-            runner: ubuntu-latest
-            cross: true
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
