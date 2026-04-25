@@ -1,10 +1,15 @@
 name: Release binaries
 
 # Triggered when the maintainer pushes a tag matching v*. Builds the
-# ai-architect-mcp binary for the four platforms Cortex's installer
-# fast-path knows how to consume (macos-aarch64, macos-x86_64,
-# linux-x86_64, linux-aarch64), tarballs each, computes a SHA256
-# companion, and attaches everything to the GitHub Release.
+# ai-architect-mcp binary for three platforms Cortex's installer
+# fast-path knows how to consume (macos-aarch64, linux-x86_64,
+# linux-aarch64), tarballs each, computes a SHA256 companion, and
+# attaches everything to the GitHub Release.
+#
+# macos-x86_64 is intentionally omitted — Apple-silicon dominance
+# in 2026 + macos-13 runner deprecation makes the cost/value ratio
+# poor. Add back when GitHub provides a native x86_64 runner that
+# isn't end-of-lifed, or cross-compile from macos-latest.
 #
 # Asset naming convention (Cortex installer contract):
 #   ai-architect-mcp-{os}-{arch}.tar.gz
@@ -23,17 +28,6 @@ permissions:
 jobs:
   build:
     name: build (${{ matrix.target_tag }})
-    # Linux targets temporarily disabled pending two upstream code-side
-    # issues observed on the v0.0.1 run (24931717180):
-    #   - linux-x86_64: zstd_sys + a transitive C++ zstd build define
-    #     duplicate symbols. macOS ld64 silently dedupes; Linux rust-lld
-    #     errors. Needs a Cargo.toml dep audit to remove the second copy.
-    #   - linux-aarch64: cross v0.2.5's docker image ships GCC 5.4 which
-    #     fails CXX20 detection for the `lbug` C++ dep. Switch to native
-    #     ``ubuntu-24.04-arm`` runner once the zstd issue is fixed (no
-    #     cross needed).
-    # Re-enable both when the dep tree is clean. Cortex's installer
-    # falls through gracefully when assets for a platform are missing.
     strategy:
       fail-fast: false
       matrix:
@@ -41,23 +35,36 @@ jobs:
           - target_tag: macos-aarch64
             rust_target: aarch64-apple-darwin
             runner: macos-latest
-            cross: false
-          - target_tag: macos-x86_64
-            rust_target: x86_64-apple-darwin
-            runner: macos-13
-            cross: false
+          - target_tag: linux-x86_64
+            rust_target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - target_tag: linux-aarch64
+            rust_target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm  # native ARM runner — no cross
     runs-on: ${{ matrix.runner }}
+
+    # zstd-sys + lbug both statically link libzstd, producing duplicate
+    # symbols on Linux (rust-lld is strict; macOS ld64 silently dedupes).
+    # ZSTD_SYS_USE_PKG_CONFIG=1 makes zstd-sys link the system libzstd
+    # dynamically, eliminating the conflict. Harmless on macOS where
+    # zstd-sys ignores it (no pkg-config installed by default).
+    env:
+      ZSTD_SYS_USE_PKG_CONFIG: "1"
+
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install Linux build deps
+        if: startsWith(matrix.runner, 'ubuntu')
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libzstd-dev pkg-config cmake
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust_target }}
-
-      - name: Install cross (linux-aarch64 only)
-        if: matrix.cross
-        run: cargo install cross --locked --version 0.2.5
 
       - name: Cache cargo registry + target
         uses: actions/cache@v4
@@ -70,13 +77,8 @@ jobs:
           restore-keys: |
             ${{ matrix.target_tag }}-cargo-
 
-      - name: Build (native)
-        if: ${{ !matrix.cross }}
+      - name: Build
         run: cargo build --release --bin ai-architect-mcp --target ${{ matrix.rust_target }}
-
-      - name: Build (cross)
-        if: matrix.cross
-        run: cross build --release --bin ai-architect-mcp --target ${{ matrix.rust_target }}
 
       - name: Strip binary (best-effort)
         run: |
