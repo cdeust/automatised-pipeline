@@ -1,0 +1,105 @@
+name: Release binaries
+
+# Triggered when the maintainer pushes a tag matching v*. Builds the
+# ai-architect-mcp binary for the four platforms Cortex's installer
+# fast-path knows how to consume (macos-aarch64, macos-x86_64,
+# linux-x86_64, linux-aarch64), tarballs each, computes a SHA256
+# companion, and attaches everything to the GitHub Release.
+#
+# Asset naming convention (Cortex installer contract):
+#   ai-architect-mcp-{os}-{arch}.tar.gz
+#   ai-architect-mcp-{os}-{arch}.tar.gz.sha256
+# where {os} ∈ {macos, linux}, {arch} ∈ {x86_64, aarch64}.
+# The tar archive root must contain ``ai-architect-mcp`` (no nested dir).
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write  # required to upload release assets
+
+jobs:
+  build:
+    name: build (${{ matrix.target_tag }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target_tag: macos-aarch64
+            rust_target: aarch64-apple-darwin
+            runner: macos-latest
+            cross: false
+          - target_tag: macos-x86_64
+            rust_target: x86_64-apple-darwin
+            runner: macos-13
+            cross: false
+          - target_tag: linux-x86_64
+            rust_target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            cross: false
+          - target_tag: linux-aarch64
+            rust_target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest
+            cross: true
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Install cross (linux-aarch64 only)
+        if: matrix.cross
+        run: cargo install cross --locked --version 0.2.5
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ matrix.target_tag }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ matrix.target_tag }}-cargo-
+
+      - name: Build (native)
+        if: ${{ !matrix.cross }}
+        run: cargo build --release --bin ai-architect-mcp --target ${{ matrix.rust_target }}
+
+      - name: Build (cross)
+        if: matrix.cross
+        run: cross build --release --bin ai-architect-mcp --target ${{ matrix.rust_target }}
+
+      - name: Strip binary (best-effort)
+        run: |
+          BIN=target/${{ matrix.rust_target }}/release/ai-architect-mcp
+          # GNU strip on Linux, llvm-strip on macOS — both ignore unknown.
+          strip "$BIN" 2>/dev/null || true
+          ls -la "$BIN"
+
+      - name: Package tarball + sha256
+        run: |
+          ASSET="ai-architect-mcp-${{ matrix.target_tag }}.tar.gz"
+          BIN=target/${{ matrix.rust_target }}/release/ai-architect-mcp
+          STAGING=$(mktemp -d)
+          cp "$BIN" "$STAGING/ai-architect-mcp"
+          tar -C "$STAGING" -czf "$ASSET" ai-architect-mcp
+          # shasum is present on every macOS + Linux GitHub runner.
+          shasum -a 256 "$ASSET" | tee "$ASSET.sha256"
+          ls -la "$ASSET" "$ASSET.sha256"
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          # Auto-creates the release on the pushed tag if it doesn't
+          # exist; subsequent jobs append assets.
+          files: |
+            ai-architect-mcp-${{ matrix.target_tag }}.tar.gz
+            ai-architect-mcp-${{ matrix.target_tag }}.tar.gz.sha256
+          fail_on_unmatched_files: true
+          generate_release_notes: true
