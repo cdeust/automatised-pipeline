@@ -1,13 +1,10 @@
 {
   "mcpServers": {
     "ai-architect": {
-      "command": "cargo",
+      "command": "bash",
       "args": [
-        "run",
-        "--quiet",
-        "--release",
-        "--manifest-path",
-        "${CLAUDE_PLUGIN_ROOT}/Cargo.toml"
+        "-c",
+        "ROOT=\"${CLAUDE_PLUGIN_ROOT:-$PWD}\" && BIN=\"$ROOT/target/release/ai-architect-mcp\" && if [ -x \"$BIN\" ]; then exec \"$BIN\"; else exec cargo run --quiet --release --manifest-path \"$ROOT/Cargo.toml\"; fi"
       ]
     }
   }
