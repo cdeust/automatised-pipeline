@@ -4,7 +4,7 @@
       "command": "bash",
       "args": [
         "-c",
-        "BIN=\"${CLAUDE_PLUGIN_ROOT}/target/release/ai-architect-mcp\" && if [ -x \"$BIN\" ]; then exec \"$BIN\"; else exec cargo run --quiet --release --manifest-path \"${CLAUDE_PLUGIN_ROOT}/Cargo.toml\"; fi"
+        "set -e; ROOT=\"${CLAUDE_PLUGIN_ROOT:-$(cd \"$(dirname \"$0\")\" && pwd)}\"; BIN=\"$ROOT/target/release/ai-architect-mcp\"; if [ ! -x \"$BIN\" ]; then \"$ROOT/bin/ensure-binary.sh\" verbose >&2 || true; fi; if [ ! -x \"$BIN\" ]; then echo \"ai-architect-mcp: FATAL — binary missing after ensure-binary.sh; build manually with: cargo build --release --manifest-path \\\"$ROOT/Cargo.toml\\\"\" >&2; exit 1; fi; exec \"$BIN\""
       ]
     }
   }

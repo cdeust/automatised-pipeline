@@ -4,6 +4,22 @@ set -euo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 TOOLS="$REPO_ROOT/tools"
 
+# Ensure the ai-architect-mcp release binary exists BEFORE Claude Code
+# attempts to connect MCP servers. First-time install builds the
+# binary synchronously here (~2-3 min on cold rust toolchain), so the
+# MCP launcher in .mcp.json never has to compile inline (which would
+# exceed the MCP startup timeout).
+#
+# Determinism: the script is idempotent — exit 0 if binary is already
+# fresh. Failures are logged to stderr but do NOT abort session-start;
+# the .mcp.json launcher will surface a clean fatal on next /mcp.
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$REPO_ROOT}"
+ENSURE_BIN="$PLUGIN_ROOT/bin/ensure-binary.sh"
+if [ -x "$ENSURE_BIN" ]; then
+    "$ENSURE_BIN" verbose 2>&1 || \
+        echo "  (ai-architect-mcp build deferred; see stderr above)" >&2
+fi
+
 # --- Colors (true color RGB — readable on dark backgrounds) ---
 TEAL="\033[1;38;2;127;187;179m"
 WHITE="\033[38;2;224;224;224m"

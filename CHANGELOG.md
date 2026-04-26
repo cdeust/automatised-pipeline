@@ -6,6 +6,38 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.0.5] — Resilient install: pre-build the MCP binary
+
+### Fixed
+
+- **Inline `cargo run --release` fallback in `.mcp.json` blocked MCP
+  startup.** When `target/release/ai-architect-mcp` was absent (fresh
+  install or first session after a checkout), the launcher invoked
+  `cargo run --release`, which can take 2–3 minutes for a cold rust
+  toolchain. Claude Code's MCP startup timeout fires long before that,
+  so the server appeared "disconnected" with no actionable message.
+  Replaced with a fail-fast launcher: check binary → if missing, run
+  `bin/ensure-binary.sh verbose` → re-check → if still missing, exit
+  1 with a `FATAL` message printing the exact `cargo build` command
+  to run. Never compiles inline during MCP startup.
+
+### Added
+
+- `bin/ensure-binary.sh` — idempotent build script. Exits 0 fast when
+  `target/release/ai-architect-mcp` exists and is newer than every
+  file under `src/` and `Cargo.{toml,lock}`. Otherwise runs
+  `cargo build --release` with progress on stderr only (stdout is
+  reserved for the MCP protocol). Distinct exit codes:
+  127 (cargo not in PATH), 1 (build failure or post-build sanity
+  failure). Runs in two modes: `quiet` (default; errors only) and
+  `verbose` (progress + timing).
+- `session-start.sh` hook now invokes `ensure-binary.sh verbose`
+  BEFORE Claude Code attempts to connect MCP servers. First-time
+  install builds the binary synchronously during the session-start
+  banner; subsequent sessions exit instantly. Hook continues even on
+  build failure — the `.mcp.json` launcher surfaces the error
+  cleanly on `/mcp`.
+
 ## [0.0.4] — Idempotent BM25 index rebuild
 
 ### Fixed
