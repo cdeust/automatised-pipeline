@@ -26,8 +26,26 @@ permissions:
   contents: write  # required to upload release assets
 
 jobs:
+  # Pre-create the release exactly once before the matrix fans out.
+  # Without this, every matrix job races to "create or upload"; the
+  # second writer hits HTTP 422 ``already_exists`` finalizing, *and*
+  # GitHub silently produces a second untagged-draft release that
+  # collects whichever assets the failing job uploaded — they never
+  # appear on the published release. Observed on v0.0.4: macOS assets
+  # landed on a draft while linux assets landed on the published
+  # release, leaving Cortex's installer with no darwin asset.
+  create_release:
+    name: create release (${{ github.ref_name }})
+    runs-on: ubuntu-latest
+    steps:
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+
   build:
     name: build (${{ matrix.target_tag }})
+    needs: create_release
     strategy:
       fail-fast: false
       matrix:
@@ -101,10 +119,11 @@ jobs:
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
-          # Auto-creates the release on the pushed tag if it doesn't
-          # exist; subsequent jobs append assets.
+          # Release was pre-created by the create_release job; we only
+          # upload here. tag_name pins the upload to that release so
+          # softprops never tries to create a sibling draft.
+          tag_name: ${{ github.ref_name }}
           files: |
             ai-architect-mcp-${{ matrix.target_tag }}.tar.gz
             ai-architect-mcp-${{ matrix.target_tag }}.tar.gz.sha256
           fail_on_unmatched_files: true
-          generate_release_notes: true
