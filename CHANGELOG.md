@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.0.4] — Idempotent BM25 index rebuild
+
+### Fixed
+
+- `search::bm25::build_index` now wipes ``index_dir`` before calling
+  `Index::create_in_dir`. Tantivy refuses to reuse a directory that
+  already contains an index (`Index already exists`), so consecutive
+  runs of `analyze_codebase` (e.g., Cortex's `ingest_codebase` with
+  `force_reindex=true`) failed with that error. The BM25 index is a
+  derived artifact rebuilt from the live graph, so removing it is
+  safe.
+
 ## [0.0.3] — Schema-guarded edge resolution
 
 ### Added

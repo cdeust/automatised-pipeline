@@ -47,7 +47,18 @@ const SEARCHABLE_LABELS: &[&str] = &[
 
 /// Builds a Tantivy BM25 index from all symbol nodes in the graph.
 /// Writes the index to `index_dir`.
+///
+/// Idempotent: any prior contents of ``index_dir`` are removed before
+/// the new index is created. Tantivy's ``Index::create_in_dir`` rejects
+/// a directory that already holds an index (`Index already exists`),
+/// so re-runs (e.g., ``analyze_codebase`` invoked with
+/// ``force_reindex=true``) would otherwise fail. The BM25 index is a
+/// derived artifact rebuilt from the live graph, so wiping is safe.
 pub fn build_index(store: &GraphStore, index_dir: &Path) -> Result<usize, String> {
+    if index_dir.exists() {
+        std::fs::remove_dir_all(index_dir)
+            .map_err(|e| format!("remove stale index dir: {e}"))?;
+    }
     std::fs::create_dir_all(index_dir)
         .map_err(|e| format!("create index dir: {e}"))?;
 
