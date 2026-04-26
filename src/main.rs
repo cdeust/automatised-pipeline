@@ -52,7 +52,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
 const SERVER_NAME: &str = "ai-architect";
-const SERVER_VERSION: &str = "0.0.1";
+const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // ---------------------------------------------------------------------------
 // Stage 1 constants — every value traces to a spec section.

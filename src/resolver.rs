@@ -6,9 +6,38 @@
 //
 // source: stages/stage-3b.md §4, §5
 
-use crate::graph_store::GraphStore;
+use crate::graph_store::{is_known_rel_table, GraphStore};
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
+
+/// Counter of edges dropped because their dynamically-formatted
+/// table name doesn't appear in REL_TABLES. Producers that build
+/// table names from runtime symbol labels (e.g., resolve_single_import
+/// → ``Imports_File_<label>``) MUST validate against the schema or
+/// risk a hard failure deep in graph_store. We surface drops via
+/// eprintln! so missing labels (e.g., Method, Field, Variant) are
+/// visible to the operator instead of silently degrading or aborting.
+static UNKNOWN_REL_DROPS: AtomicU64 = AtomicU64::new(0);
+
+/// Stage-3b helper: validate the dynamically-formed rel table against
+/// the schema before staging. Returns true when it's safe to insert.
+/// Logs the first few unknown labels at warn-equivalent level so the
+/// operator can surface them as a missing-schema-entry without each
+/// occurrence spamming the log.
+fn check_known_rel_table(table: &str, from_id: &str, to_id: &str) -> bool {
+    if is_known_rel_table(table) {
+        return true;
+    }
+    let n = UNKNOWN_REL_DROPS.fetch_add(1, Ordering::Relaxed);
+    if n < 8 {
+        eprintln!(
+            "resolver: dropped edge with unknown rel table '{table}' \
+             ({from_id} -> {to_id}); add it to REL_TABLES in graph_store.rs"
+        );
+    }
+    false
+}
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -300,6 +329,9 @@ fn resolve_single_import(
     let matched = pick_best_candidate(candidates, normalized_path);
     let entry = matched?;
     let table = format!("Imports_File_{}", entry.label);
+    if !check_known_rel_table(&table, file_id, &entry.id) {
+        return Some(0);
+    }
     let conf = compute_import_confidence(candidates.len());
     buf.add(&table, file_id, &entry.id, conf, "import-scope-lookup");
     Some(1)
@@ -317,6 +349,9 @@ fn resolve_glob_import(
             continue;
         }
         let table = format!("Imports_File_{}", entry.label);
+        if !check_known_rel_table(&table, file_id, &entry.id) {
+            continue;
+        }
         if buf.add(&table, file_id, &entry.id, 0.9, "import-scope-lookup") {
             count += 1;
         }
@@ -378,7 +413,16 @@ fn resolve_calls(
                 };
                 match rel_opt {
                     Some(rel) => {
-                        if buf.add(&rel, &caller_qn, &target.id, conf, "import-scope-lookup") {
+                        if !check_known_rel_table(&rel, &caller_qn, &target.id) {
+                            // Schema doesn't declare this label combination —
+                            // already logged. Skip to next callee.
+                        } else if buf.add(
+                            &rel,
+                            &caller_qn,
+                            &target.id,
+                            conf,
+                            "import-scope-lookup",
+                        ) {
                             resolved += 1;
                         }
                     }
@@ -664,6 +708,9 @@ fn resolve_field_type_uses(
         for type_name in &type_names {
             if let Some(target) = find_type_target(idx, type_name) {
                 let table = format!("Uses_Field_{}", target.label);
+                if !check_known_rel_table(&table, field_id, &target.id) {
+                    continue;
+                }
                 if buf.add(&table, field_id, &target.id, 0.9, "type-annotation-parse") {
                     resolved += 1;
                 }

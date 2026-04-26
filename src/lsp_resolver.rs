@@ -6,7 +6,7 @@
 //
 // source: stages/stage-3b.md §7 — "method calls on inferred types" deferred to LSP
 
-use crate::graph_store::GraphStore;
+use crate::graph_store::{is_known_rel_table, GraphStore};
 use crate::lsp_client::{self, LspClient, LspResolutionResult};
 use std::collections::HashMap;
 use std::path::Path;
@@ -335,6 +335,18 @@ fn try_add_lsp_edge(
         }
         _ => return false,
     };
+
+    // Schema guard: dynamically formatted rel tables can outrun the
+    // schema when a new caller/target label combination appears. Drop
+    // rather than abort.
+    if !is_known_rel_table(&rel_type) {
+        eprintln!(
+            "lsp_resolver: dropped edge with unknown rel table '{rel_type}' \
+             ({} -> {}); add it to REL_TABLES in graph_store.rs",
+            site.caller_qn, target.id
+        );
+        return false;
+    }
 
     // Insert edge with LSP-backed confidence (0.9)
     store.insert_edge(

@@ -410,6 +410,7 @@ pub const REL_TABLES: &[(&str, &str, &str)] = &[
     ("Imports_File_File", NODE_FILE, NODE_FILE),
     ("Imports_File_Module", NODE_FILE, NODE_MODULE),
     ("Imports_File_Function", NODE_FILE, NODE_FUNCTION),
+    ("Imports_File_Method", NODE_FILE, NODE_METHOD),
     ("Imports_File_Struct", NODE_FILE, NODE_STRUCT),
     ("Imports_File_Enum", NODE_FILE, NODE_ENUM),
     ("Imports_File_Trait", NODE_FILE, NODE_TRAIT),

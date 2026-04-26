@@ -6,7 +6,31 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.0.3] — Schema-guarded edge resolution
+
 ### Added
+
+- `is_known_rel_table` helper in `graph_store.rs` — public predicate
+  over `REL_TABLES` so producers that build relationship-table names
+  from runtime symbol labels can validate before insertion instead of
+  failing inside the graph driver.
+- `Imports_File_Method` declared in `REL_TABLES`; previously a method
+  imported directly from a file produced a dropped edge with no
+  recoverable target table.
+
+### Fixed
+
+- `resolver::resolve_single_import`, `resolve_glob_import`,
+  `resolve_calls`, and `resolve_field_type_uses` now consult
+  `is_known_rel_table` before staging an edge. Unknown labels are
+  logged (first 8 occurrences via an `AtomicU64` counter to bound
+  log volume) and the edge is dropped — this replaces the previous
+  hard failure path when a new caller/target label combination
+  appeared at runtime.
+- `lsp_resolver::try_add_lsp_edge` applies the same guard to
+  LSP-derived edges (rust-analyzer / pyright / tsserver).
+
+### Added — public-readiness baseline (carried over from Unreleased)
 
 - Public-readiness baseline: LICENSE (MIT, sole independent author),
   CONTRIBUTING.md, CODE_OF_CONDUCT.md, SECURITY.md.
