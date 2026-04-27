@@ -6,6 +6,25 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.0.6] — Self-locating plugin MCP launcher
+
+### Fixed
+
+- **`ai-architect` MCP server failed to connect from any non-plugin CWD.**
+  The `.mcp.json` launcher relied on Claude Code injecting
+  `CLAUDE_PLUGIN_ROOT`, which was not happening reliably. The fallback
+  `${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")" && pwd)}` is broken
+  under `bash -c` (where `$0` is `bash`, not the script path), so
+  `$ROOT` resolved to the user's project directory — where
+  `target/release/ai-architect-mcp` does not exist. Replaced the bash
+  command with a Python one-liner that reads
+  `~/.claude/plugins/installed_plugins.json` (always at a fixed
+  absolute path) to discover the plugin install path, then `execvp`s
+  the Rust binary, falling back to `bin/ensure-binary.sh` if the
+  binary is missing. No CWD or env dependency. Users in any project
+  now get the MCP server on plugin update — no per-project
+  configuration required.
+
 ## [0.0.5] — Resilient install: pre-build the MCP binary
 
 ### Fixed
