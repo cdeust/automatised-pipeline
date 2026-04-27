@@ -4,7 +4,7 @@
       "command": "python3",
       "args": [
         "-c",
-        "import json,os,subprocess,sys; p=json.load(open(os.path.expanduser('~/.claude/plugins/installed_plugins.json')))['plugins']['automatised-pipeline@automatised-pipeline-marketplace'][0]['installPath']; b=os.path.join(p,'target','release','ai-architect-mcp'); (not os.access(b,os.X_OK)) and subprocess.run([os.path.join(p,'bin','ensure-binary.sh'),'verbose'],stderr=sys.stderr); os.access(b,os.X_OK) or (sys.stderr.write(f'ai-architect-mcp: FATAL — binary missing after ensure-binary.sh; build manually with: cargo build --release --manifest-path \"{os.path.join(p,\"Cargo.toml\")}\"\\n') or sys.exit(1)); os.execvp(b,[b])"
+        "import json,os,subprocess,sys; p=json.load(open(os.path.expanduser('~/.claude/plugins/installed_plugins.json')))['plugins']['automatised-pipeline@automatised-pipeline-marketplace'][0]['installPath']; b=os.path.join(p,'target','release','automatised-pipeline'); (not os.access(b,os.X_OK)) and subprocess.run([os.path.join(p,'bin','ensure-binary.sh'),'verbose'],stderr=sys.stderr); os.access(b,os.X_OK) or (sys.stderr.write(f'automatised-pipeline: FATAL — binary missing after ensure-binary.sh; build manually with: cargo build --release --manifest-path \"{os.path.join(p,\"Cargo.toml\")}\"\\n') or sys.exit(1)); os.execvp(b,[b])"
       ]
     }
   }

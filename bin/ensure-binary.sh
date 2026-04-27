@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ensure-binary.sh — guarantee target/release/ai-architect-mcp exists.
+# ensure-binary.sh — guarantee target/release/automatised-pipeline exists.
 #
 # Used by:
 #   - session-start.sh hook (runs synchronously, BEFORE MCP servers
@@ -10,7 +10,7 @@
 #
 # Behaviour
 # ---------
-# 1. If `target/release/ai-architect-mcp` exists AND is newer than every
+# 1. If `target/release/automatised-pipeline` exists AND is newer than every
 #    file under `src/` and `Cargo.{toml,lock}`, exit 0 immediately.
 # 2. Otherwise, run `cargo build --release --quiet`. Prints progress to
 #    stderr only — stdout stays clean for the MCP launcher pipeline.
@@ -22,7 +22,7 @@
 set -euo pipefail
 
 ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-BIN="$ROOT/target/release/ai-architect-mcp"
+BIN="$ROOT/target/release/automatised-pipeline"
 MANIFEST="$ROOT/Cargo.toml"
 SRC_DIR="$ROOT/src"
 
@@ -37,7 +37,7 @@ log() {
 }
 
 err() {
-    echo "ai-architect-mcp: $*" >&2
+    echo "automatised-pipeline: $*" >&2
 }
 
 # Need cargo available in PATH.
@@ -71,7 +71,7 @@ else
 fi
 
 if [ "$needs_build" = "no" ]; then
-    log "ai-architect-mcp: binary up-to-date at $BIN"
+    log "automatised-pipeline: binary up-to-date at $BIN"
     exit 0
 fi
 
@@ -86,10 +86,10 @@ start_ts=$(date +%s)
 if cargo build --release --quiet --manifest-path "$MANIFEST" >&2; then
     end_ts=$(date +%s)
     elapsed=$((end_ts - start_ts))
-    err "ai-architect-mcp: build OK in ${elapsed}s"
+    err "automatised-pipeline: build OK in ${elapsed}s"
     if [ ! -x "$BIN" ]; then
         err "FATAL: cargo build succeeded but $BIN is not executable."
-        err "       Check Cargo.toml [[bin]] target name == 'ai-architect-mcp'."
+        err "       Check Cargo.toml [[bin]] target name == 'automatised-pipeline'."
         exit 1
     fi
     exit 0

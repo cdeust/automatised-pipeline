@@ -1,4 +1,4 @@
-// ai-architect-mcp — stage-by-stage MCP rewrite of the ai-architect pipeline.
+// automatised-pipeline — stage-by-stage MCP rewrite of the ai-architect pipeline.
 //
 // Transport: stdio JSON-RPC 2.0, hand-rolled (no MCP SDK — we own the protocol
 // wire layer so the agents know exactly what's happening).
@@ -3465,7 +3465,7 @@ mod security_tests {
 }
 
 fn main() {
-    eprintln!("[ai-architect-mcp] stage 0-3d up (Rust {})", SERVER_VERSION);
+    eprintln!("[automatised-pipeline] stage 0-3d up (Rust {})", SERVER_VERSION);
 
     let stdin = io::stdin();
     let handle = stdin.lock();
@@ -3473,7 +3473,7 @@ fn main() {
         let line = match line {
             Ok(l) => l,
             Err(e) => {
-                eprintln!("[ai-architect-mcp] stdin error: {}", e);
+                eprintln!("[automatised-pipeline] stdin error: {}", e);
                 break;
             }
         };
@@ -3483,7 +3483,7 @@ fn main() {
         }
         match serde_json::from_str::<Request>(trimmed) {
             Ok(req) => handle_request(req),
-            Err(e) => eprintln!("[ai-architect-mcp] parse error: {}", e),
+            Err(e) => eprintln!("[automatised-pipeline] parse error: {}", e),
         }
     }
 }

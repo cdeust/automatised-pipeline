@@ -6,6 +6,27 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.0.7] — Rename binary `ai-architect-mcp` → `automatised-pipeline`
+
+### Changed
+
+- **Binary renamed** from `ai-architect-mcp` to `automatised-pipeline`
+  to match the project / plugin / repository name. The Cortex
+  `ap_bridge.py` allowlist already accepts `automatised-pipeline`;
+  the legacy `ai-architect-mcp` identifier was a stale carryover from
+  the project's earlier life as the umbrella `ai-architect` pipeline.
+  Affected files: `Cargo.toml` `[[bin]] name`, `bin/ensure-binary.sh`,
+  `.mcp.json`, `.github/workflows/release.yml`, `.claude/hooks/session-start.sh`.
+
+### Migration notes
+
+- Release artifacts are now named `automatised-pipeline-{os}-{arch}.tar.gz`
+  (was `ai-architect-mcp-*`). Consumers (e.g. Cortex `pipeline_install_release.py`)
+  must update their download URLs.
+- Built binary path is now `target/release/automatised-pipeline`.
+- The Rust crate name (`[package].name`) is unchanged at `ai-architect-mcp`
+  to preserve crate identity for any downstream Cargo dependents.
+
 ## [0.0.6] — Self-locating plugin MCP launcher
 
 ### Fixed
