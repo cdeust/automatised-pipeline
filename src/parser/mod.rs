@@ -5,8 +5,15 @@
 // The indexer calls `parse_file(source, file_path, language)` and gets a
 // uniform result regardless of language.
 
+pub mod c;
+pub mod cpp;
+pub mod go;
+pub mod java;
+pub mod kotlin;
+pub mod objc;
 pub mod python;
 pub mod rust;
+pub mod swift;
 pub mod typescript;
 
 // source: H2 fix — per-file tree-sitter parse timeout. 5 seconds is ~100x
@@ -26,6 +33,13 @@ pub enum Language {
     Rust,
     Python,
     TypeScript,
+    Java,
+    Kotlin,
+    Swift,
+    ObjC,
+    C,
+    Cpp,
+    Go,
 }
 
 impl Language {
@@ -35,6 +49,19 @@ impl Language {
             "rs" => Some(Language::Rust),
             "py" => Some(Language::Python),
             "ts" | "tsx" => Some(Language::TypeScript),
+            "java" => Some(Language::Java),
+            "kt" | "kts" => Some(Language::Kotlin),
+            "swift" => Some(Language::Swift),
+            // ``.m`` is ObjC; ``.mm`` is ObjC++ which we handle with the
+            // ObjC grammar (it supports mixed C++ constructs via embedded
+            // C++ rules; full fidelity would require a separate parser).
+            "m" | "mm" => Some(Language::ObjC),
+            // ``.h`` is ambiguous (C/C++/ObjC). Default to C to cover the
+            // majority case; projects that need C++ headers parsed as C++
+            // can pass ``language: "cpp"`` explicitly.
+            "c" | "h" => Some(Language::C),
+            "cc" | "cpp" | "cxx" | "hh" | "hpp" | "hxx" => Some(Language::Cpp),
+            "go" => Some(Language::Go),
             _ => None,
         }
     }
@@ -45,6 +72,13 @@ impl Language {
             Language::Rust => "rust",
             Language::Python => "python",
             Language::TypeScript => "typescript",
+            Language::Java => "java",
+            Language::Kotlin => "kotlin",
+            Language::Swift => "swift",
+            Language::ObjC => "objc",
+            Language::C => "c",
+            Language::Cpp => "cpp",
+            Language::Go => "go",
         }
     }
 
@@ -54,6 +88,13 @@ impl Language {
             "rust" => Some(Language::Rust),
             "python" => Some(Language::Python),
             "typescript" => Some(Language::TypeScript),
+            "java" => Some(Language::Java),
+            "kotlin" => Some(Language::Kotlin),
+            "swift" => Some(Language::Swift),
+            "objc" | "objective-c" => Some(Language::ObjC),
+            "c" => Some(Language::C),
+            "cpp" | "c++" => Some(Language::Cpp),
+            "go" => Some(Language::Go),
             _ => None,
         }
     }
@@ -112,6 +153,13 @@ pub fn parse_file(source: &str, file_path: &str, lang: Language) -> Result<Parse
         Language::Rust => rust::parse_rust_file(source, file_path),
         Language::Python => python::parse_python_file(source, file_path),
         Language::TypeScript => typescript::parse_typescript_file(source, file_path),
+        Language::Java => java::parse_java_file(source, file_path),
+        Language::Kotlin => kotlin::parse_kotlin_file(source, file_path),
+        Language::Swift => swift::parse_swift_file(source, file_path),
+        Language::ObjC => objc::parse_objc_file(source, file_path),
+        Language::C => c::parse_c_file(source, file_path),
+        Language::Cpp => cpp::parse_cpp_file(source, file_path),
+        Language::Go => go::parse_go_file(source, file_path),
     }
 }
 

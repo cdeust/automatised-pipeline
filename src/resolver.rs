@@ -219,8 +219,27 @@ impl EdgeBuffer {
     }
 
     fn flush(self, store: &GraphStore) -> Result<(), String> {
+        // Tolerate unknown rel tables: the resolver builds rel-table
+        // names dynamically from caller+target labels (e.g.
+        // Calls_Method_Struct when a method calls a struct constructor),
+        // but REL_TABLES only declares a subset of label pairs. Skipping
+        // the unknown ones with a warning lets every valid table still
+        // flush. Previously, one unknown table aborted the whole flush
+        // via ``?`` and dropped every resolved edge — which is why
+        // downstream consumers (Cortex viz) saw zero Calls/Imports rows.
         for (table, edges) in &self.by_table {
-            store.bulk_insert_edges(table, edges)?;
+            match store.bulk_insert_edges(table, edges) {
+                Ok(_) => {}
+                Err(e) if e.contains("unknown relationship type") => {
+                    eprintln!(
+                        "resolver: skipping {} edges on unknown rel table {} ({})",
+                        edges.len(),
+                        table,
+                        e,
+                    );
+                }
+                Err(e) => return Err(e),
+            }
         }
         Ok(())
     }

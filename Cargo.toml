@@ -6,7 +6,7 @@ members = [".", "benches/harness"]
 
 [package]
 name = "ai-architect-mcp"
-version = "0.0.7"
+version = "0.0.8"
 edition = "2021"
 description = "Stage-by-stage rewrite of the ai-architect pipeline as an MCP server. One tool per stage. Grown by zetetic + genius agents."
 
@@ -32,6 +32,17 @@ tree-sitter-rust = "0.23"
 # MIT licensed. Used by parser/python.rs and parser/typescript.rs.
 tree-sitter-python = "0.23"
 tree-sitter-typescript = "0.23"
+# source: multi-language parser expansion — JVM + Apple + systems + Go.
+# Each grammar crate is an official tree-sitter parser published on crates.io,
+# MIT or Apache-2.0 licensed, and used by parser/<lang>.rs to extract typed
+# symbols matching the graph_store schema.
+tree-sitter-java = "0.23"
+tree-sitter-kotlin-ng = "1.1"
+tree-sitter-swift = "0.7"
+tree-sitter-objc = "3.0"
+tree-sitter-c = "0.23"
+tree-sitter-cpp = "0.23"
+tree-sitter-go = "0.23"
 # source: stages/stage-3-research.md §2 — Tantivy for BM25 full-text search.
 # In-process search engine, MIT licensed (quickwit-oss).
 tantivy = "0.22"

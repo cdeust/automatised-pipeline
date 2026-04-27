@@ -2556,9 +2556,7 @@ fn do_analyze_codebase(arguments: &Value) -> Result<Value, String> {
     // Phase 2b: LSP-enhanced resolution (optional)
     let lsp_result = if enable_lsp {
         let effective_lang = match lang_filter {
-            Some(parser::Language::Rust) => "rust".to_string(),
-            Some(parser::Language::Python) => "python".to_string(),
-            Some(parser::Language::TypeScript) => "typescript".to_string(),
+            Some(lang) => lang.as_str().to_string(),
             None => detect_dominant_language(&codebase),
         };
         match lsp_resolver::resolve_with_lsp(

@@ -222,9 +222,9 @@ fn index_codebase_schema() -> Value {
                 },
                 "language": {
                     "type": "string",
-                    "enum": ["auto", "rust", "python", "typescript"],
+                    "enum": ["auto", "rust", "python", "typescript", "java", "kotlin", "swift", "objc", "c", "cpp", "go"],
                     "default": "auto",
-                    "description": "Language to parse. 'auto' detects per-file by extension (.rs, .py, .ts/.tsx). Specific values restrict to that language only."
+                    "description": "Language to parse. 'auto' detects per-file by extension (.rs, .py, .ts/.tsx, .java, .kt/.kts, .swift, .m/.mm, .c/.h, .cc/.cpp/.hpp, .go). Specific values restrict to that language only."
                 },
                 "output_dir": {
                     "type": "string",
@@ -429,9 +429,9 @@ fn analyze_codebase_schema() -> Value {
                 },
                 "language": {
                     "type": "string",
-                    "enum": ["auto", "rust", "python", "typescript"],
+                    "enum": ["auto", "rust", "python", "typescript", "java", "kotlin", "swift", "objc", "c", "cpp", "go"],
                     "default": "auto",
-                    "description": "Language to parse. 'auto' detects per-file by extension (.rs, .py, .ts/.tsx). Specific values restrict to that language only."
+                    "description": "Language to parse. 'auto' detects per-file by extension (.rs, .py, .ts/.tsx, .java, .kt/.kts, .swift, .m/.mm, .c/.h, .cc/.cpp/.hpp, .go). Specific values restrict to that language only."
                 },
                 "output_dir": {
                     "type": "string",
@@ -471,7 +471,7 @@ fn lsp_resolve_schema() -> Value {
                 },
                 "language": {
                     "type": "string",
-                    "enum": ["rust", "python", "typescript", "auto"],
+                    "enum": ["auto", "rust", "python", "typescript", "java", "kotlin", "swift", "objc", "c", "cpp", "go"],
                     "default": "auto",
                     "description": "Language for LSP server selection. 'auto' detects from file extensions."
                 },

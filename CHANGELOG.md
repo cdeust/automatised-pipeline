@@ -6,6 +6,36 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.0.8] — Multi-language parser expansion (Java, Kotlin, Swift, Objective-C, C, C++, Go)
+
+### Added
+
+- **Seven new tree-sitter parsers** under `src/parser/`:
+  `java.rs`, `kotlin.rs`, `swift.rs`, `objc.rs`, `c.rs`, `cpp.rs`, `go.rs`.
+  Adds JVM (Java + Kotlin), Apple (Swift + Objective-C), systems
+  (C + C++) and Go to the previously-shipped Rust / Python / TypeScript
+  trio. `parser/mod.rs` registers all 10 languages; `tool_schemas.rs`
+  exposes them in `index_codebase` / `analyze_codebase` language hints.
+- **Grammar dependencies** (Cargo.toml): `tree-sitter-java`,
+  `tree-sitter-kotlin-ng`, `tree-sitter-swift`, `tree-sitter-objc`,
+  `tree-sitter-c`, `tree-sitter-cpp`, `tree-sitter-go`. All MIT or
+  Apache-2.0; all official tree-sitter grammars on crates.io.
+
+### Changed
+
+- `do_analyze_codebase`: replaced the explicit Rust/Python/TypeScript
+  match with a generic `lang.as_str()` dispatch so LSP-enhanced
+  resolution flows through to every supported language.
+- Each new parser extracts typed symbols matching the existing
+  `graph_store` schema (entities + edges) so the property graph
+  remains polyglot-uniform.
+
+### Migration notes
+
+- First build is slower: each new tree-sitter grammar carries C
+  source that must compile through `cmake` / `cc`. Subsequent
+  incremental builds reuse the per-grammar caches.
+
 ## [0.0.7] — Rename binary `ai-architect-mcp` → `automatised-pipeline`
 
 ### Changed
