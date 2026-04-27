@@ -6,6 +6,25 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.0.9] — Skip build / dependency dirs at walk time (Android, iOS, Go, JVM)
+
+### Fixed
+
+- **Indexer wasted minutes walking into `build/`, `Pods/`, `DerivedData/`,
+  `.gradle/`, `vendor/` etc.** on multi-language repos. The previous
+  `should_skip` only filtered Rust / JS / Python conventions
+  (`target`, `node_modules`, `__pycache__`, `.venv`, hidden dirs), so
+  Android codebases (`app/build/intermediates/`, `feature/*/build/`)
+  produced tens of thousands of file stat() calls and per-file size
+  rejections after the walker had already descended into them. On a
+  large Android tree this manifested as `ingest_codebase` appearing
+  to hang. Filtering at the directory level avoids the descent
+  entirely.
+- Extended `should_skip` to cover: `build`, `out`, `.gradle`, `.idea`
+  (JVM / Android), `Pods`, `DerivedData`, `.build`, `Carthage`,
+  `.swiftpm` (Apple), `vendor` (Go), `dist`, `bin`, `obj`, `coverage`,
+  `.nyc_output`, `.pytest_cache`, `.mypy_cache`, `.tox`, `.eggs`.
+
 ## [0.0.8] — Multi-language parser expansion (Java, Kotlin, Swift, Objective-C, C, C++, Go)
 
 ### Added

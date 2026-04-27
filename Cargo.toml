@@ -6,7 +6,7 @@ members = [".", "benches/harness"]
 
 [package]
 name = "ai-architect-mcp"
-version = "0.0.8"
+version = "0.0.9"
 edition = "2021"
 description = "Stage-by-stage rewrite of the ai-architect pipeline as an MCP server. One tool per stage. Grown by zetetic + genius agents."
 

@@ -209,13 +209,49 @@ fn walk_dir_recursive(
 }
 
 /// Returns true for directories that should be skipped during walk.
+///
+/// Covers build / dependency / cache directories across the languages
+/// the indexer supports. source: empirical — without ``build`` and
+/// ``Pods`` excluded, an Android repo's ``app/build/intermediates/``
+/// alone produces tens of thousands of stat() calls and many hundred
+/// MB of *.dex / *.aar / *.jar files that the indexer rejects per-file
+/// after walking into them. Filtering at the directory level avoids
+/// the descent entirely.
 fn should_skip(name: &str) -> bool {
     name.starts_with('.')
+        // Rust
         || name == "target"
+        // JS / TS / Node
         || name == "node_modules"
+        // Python
         || name == "__pycache__"
         || name == ".venv"
         || name == "venv"
+        || name == ".pytest_cache"
+        || name == ".mypy_cache"
+        || name == ".tox"
+        || name == ".eggs"
+        // JVM / Android (Gradle / Maven / Eclipse / IntelliJ)
+        || name == "build"
+        || name == "out"
+        || name == ".gradle"
+        || name == ".idea"
+        // Apple (Xcode / SPM / CocoaPods / Carthage)
+        || name == "Pods"
+        || name == "DerivedData"
+        || name == ".build"
+        || name == "Carthage"
+        || name == ".swiftpm"
+        // Go
+        || name == "vendor"
+        // General build output
+        || name == "dist"
+        || name == "bin"
+        || name == "obj"
+        // Test / coverage
+        || name == "coverage"
+        || name == ".nyc_output"
+        // VCS already filtered by ``starts_with('.')`` (covers .git)
 }
 
 // ---------------------------------------------------------------------------
