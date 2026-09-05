@@ -405,7 +405,7 @@ fn resolve_graph_schema() -> Value {
 fn cluster_graph_schema() -> Value {
     json!({
         "name": "cluster_graph",
-        "description": "Stage 3c — Run community detection and process tracing on an indexed+resolved graph. Groups symbols into functional communities via Louvain+C2 repair, detects entry points (main, test, handler, lib_entry), and traces BFS call chains to create Process nodes. Requires resolve_graph to have been called first.",
+        "description": "Stage 3c — Run community detection and process tracing on an indexed+resolved graph. Groups symbols into functional communities via Louvain+C2 repair, detects entry points (main, test, proof, handler, lib_entry; proof denotes a source harness, not a verified result), and traces BFS call chains to create Process nodes. Requires resolve_graph to have been called first.",
         "annotations": { "destructiveHint": true },
         "inputSchema": {
             "type": "object",
@@ -429,7 +429,7 @@ fn cluster_graph_schema() -> Value {
 fn get_processes_schema() -> Value {
     json!({
         "name": "get_processes",
-        "description": "Stage 3c — List all detected processes (execution flows from entry points). Each process has an entry point, entry kind (main/test/handler/lib_entry), BFS depth, and symbol count. Requires cluster_graph to have been called first.",
+        "description": "Stage 3c — List all detected processes (execution flows from entry points). Each process has an entry point, entry kind (main/test/proof/handler/lib_entry; proof denotes a source harness, not a verified result), BFS depth, and symbol count. Requires cluster_graph to have been called first.",
         "annotations": { "readOnlyHint": true },
         "inputSchema": {
             "type": "object",

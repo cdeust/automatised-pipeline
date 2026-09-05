@@ -26,6 +26,7 @@ fn main() {
     println!("{}", result);
 }
 
+#[test]
 fn test_basic() {
     let _ = service::process_data("test");
 }
@@ -62,17 +63,7 @@ pub fn unused_helper() -> i32 {
 // Test
 // ---------------------------------------------------------------------------
 
-#[test]
-fn test_clustering_and_process_tracing() {
-    // issue #25 audit: process::id() collides across processes under PID
-    // reuse; tempfile's random suffix does not.
-    let tmp_root = tempfile::Builder::new()
-        .prefix("stage3c_integration_")
-        .tempdir()
-        .expect("create temp dir")
-        .keep_managed();
-    let _ = fs::remove_dir_all(&tmp_root);
-
+fn indexed_fixture(tmp_root: &std::path::Path) -> (GraphStore, indexer::IndexResult) {
     // Set up fixture project
     let fixture_dir = tmp_root.join("fixture/src");
     fs::create_dir_all(&fixture_dir).expect("create fixture");
@@ -83,20 +74,14 @@ fn test_clustering_and_process_tracing() {
     // Index + resolve
     let graph_dir = tmp_root.join("graph");
     let idx = indexer::index_codebase(&fixture_dir, &graph_dir).expect("index_codebase");
-    assert_eq!(idx.files_indexed, 3);
 
     let store = GraphStore::open_or_create(&graph_dir).unwrap();
-    let _res = resolver::resolve_graph(&store).expect("resolve_graph");
+    resolver::resolve_graph(&store).expect("resolve_graph");
 
-    // Cluster
-    let result = clustering::cluster_graph(&store, 1.0).expect("cluster_graph");
+    (store, idx)
+}
 
-    assert!(
-        result.communities > 0,
-        "should detect at least 1 community, got {}",
-        result.communities
-    );
-
+fn assert_symbol_membership(store: &GraphStore) {
     // Verify I1: every symbol has exactly one MemberOf edge
     let symbol_labels = [
         "Function",
@@ -128,14 +113,9 @@ fn test_clustering_and_process_tracing() {
         total_symbols, total_memberof,
         "I1 violated: {total_symbols} symbols but {total_memberof} MemberOf edges"
     );
+}
 
-    // Verify processes were created
-    assert!(
-        result.processes > 0,
-        "should detect at least 1 process, got {}",
-        result.processes
-    );
-
+fn assert_process_entry_points(store: &GraphStore) {
     // Verify Process nodes exist
     let qr = store
         .execute_query("MATCH (p:Process) RETURN p.name, p.entry_kind")
@@ -164,9 +144,11 @@ fn test_clustering_and_process_tracing() {
             "I4 violated: process {pname} has {ep_count} EntryPointOf edges"
         );
     }
+}
 
+fn assert_process_queries_and_depth(store: &GraphStore) {
     // Verify get_processes returns data
-    let processes = clustering::get_processes(&store).unwrap();
+    let processes = clustering::get_processes(store).unwrap();
     assert!(!processes.is_empty(), "get_processes should return data");
 
     // Verify get_impact for main function (use actual ID from graph)
@@ -174,7 +156,7 @@ fn test_clustering_and_process_tracing() {
         .execute_query("MATCH (f:Function) WHERE f.name = 'main' RETURN f.id")
         .unwrap();
     let main_id = &main_qr.rows[0][0];
-    let impact = clustering::get_impact(&store, main_id).unwrap();
+    let impact = clustering::get_impact(store, main_id).unwrap();
     assert!(
         !impact.communities.is_empty(),
         "main should belong to at least one community"
@@ -197,7 +179,9 @@ fn test_clustering_and_process_tracing() {
         "ParticipatesIn depth must reflect BFS distance (the call-chain order), \
          not be flattened to 0; got max depth {max_part_depth}"
     );
+}
 
+fn assert_reverse_impact(store: &GraphStore) {
     // Reverse-traversal fix: get_impact must return the symbols that DEPEND ON
     // the target. process_data is called by both main and test_basic, so its
     // callers set is non-empty and contains main.
@@ -205,7 +189,7 @@ fn test_clustering_and_process_tracing() {
         .execute_query("MATCH (f:Function) WHERE f.name = 'process_data' RETURN f.id")
         .unwrap();
     let pd_id = &pd_qr.rows[0][0];
-    let pd_impact = clustering::get_impact(&store, pd_id).unwrap();
+    let pd_impact = clustering::get_impact(store, pd_id).unwrap();
     assert!(
         !pd_impact.callers.is_empty(),
         "get_impact(process_data) must return its callers (main, test_basic), \
@@ -226,46 +210,9 @@ fn test_clustering_and_process_tracing() {
         pd_impact.callers.iter().all(|c| !c.id.is_empty()),
         "every caller handle must carry a non-empty id for further traversal"
     );
-
-    // Verify modularity is reasonable
-    assert!(
-        result.modularity >= -1.0 && result.modularity <= 1.0,
-        "modularity out of range: {}",
-        result.modularity
-    );
-
-    let _ = fs::remove_dir_all(&tmp_root);
 }
 
-#[test]
-fn test_cluster_graph_returns_mapping() {
-    // Regression for B2: `cluster_graph` must surface a per-symbol
-    // community membership mapping, not just counts/modularity. Without
-    // this, the harness Q12 scorer (adjusted Rand index) has nothing to
-    // compare against and collapses to 0.
-    // issue #25 audit: process::id() collides across processes under PID
-    // reuse; tempfile's random suffix does not.
-    let tmp_root = tempfile::Builder::new()
-        .prefix("stage3c_mapping_")
-        .tempdir()
-        .expect("create temp dir")
-        .keep_managed();
-    let _ = fs::remove_dir_all(&tmp_root);
-
-    let fixture_dir = tmp_root.join("fixture/src");
-    fs::create_dir_all(&fixture_dir).expect("create fixture");
-    fs::write(fixture_dir.join("main.rs"), FIXTURE_MAIN).unwrap();
-    fs::write(fixture_dir.join("service.rs"), FIXTURE_SERVICE).unwrap();
-    fs::write(fixture_dir.join("helpers.rs"), FIXTURE_HELPERS).unwrap();
-
-    let graph_dir = tmp_root.join("graph");
-    indexer::index_codebase(&fixture_dir, &graph_dir).expect("index_codebase");
-    let store = GraphStore::open_or_create(&graph_dir).unwrap();
-    resolver::resolve_graph(&store).expect("resolve_graph");
-    clustering::cluster_graph(&store, 1.0).expect("cluster_graph");
-
-    let memberships = clustering::collect_cluster_memberships(&store).expect("collect");
-
+fn assert_mapping_entries(memberships: &clustering::ClusterMemberships) {
     assert!(
         !memberships.entries.is_empty(),
         "clusters mapping must be non-empty after cluster_graph persistence"
@@ -294,6 +241,77 @@ fn test_cluster_graph_returns_mapping() {
             m.community_id
         );
     }
+}
+
+#[test]
+fn test_clustering_and_process_tracing() {
+    // issue #25 audit: process::id() collides across processes under PID
+    // reuse; tempfile's random suffix does not.
+    let tmp_root = tempfile::Builder::new()
+        .prefix("stage3c_integration_")
+        .tempdir()
+        .expect("create temp dir")
+        .keep_managed();
+    let _ = fs::remove_dir_all(&tmp_root);
+
+    let (store, idx) = indexed_fixture(&tmp_root);
+    assert_eq!(idx.files_indexed, 3);
+
+    // Cluster
+    let result = clustering::cluster_graph(&store, 1.0).expect("cluster_graph");
+
+    assert!(
+        result.communities > 0,
+        "should detect at least 1 community, got {}",
+        result.communities
+    );
+
+    assert_symbol_membership(&store);
+
+    // Verify processes were created
+    assert!(
+        result.processes > 0,
+        "should detect at least 1 process, got {}",
+        result.processes
+    );
+
+    assert_process_entry_points(&store);
+
+    assert_process_queries_and_depth(&store);
+
+    assert_reverse_impact(&store);
+
+    // Verify modularity is reasonable
+    assert!(
+        result.modularity >= -1.0 && result.modularity <= 1.0,
+        "modularity out of range: {}",
+        result.modularity
+    );
+
+    let _ = fs::remove_dir_all(&tmp_root);
+}
+
+#[test]
+fn test_cluster_graph_returns_mapping() {
+    // Regression for B2: `cluster_graph` must surface a per-symbol
+    // community membership mapping, not just counts/modularity. Without
+    // this, the harness Q12 scorer (adjusted Rand index) has nothing to
+    // compare against and collapses to 0.
+    // issue #25 audit: process::id() collides across processes under PID
+    // reuse; tempfile's random suffix does not.
+    let tmp_root = tempfile::Builder::new()
+        .prefix("stage3c_mapping_")
+        .tempdir()
+        .expect("create temp dir")
+        .keep_managed();
+    let _ = fs::remove_dir_all(&tmp_root);
+
+    let (store, _) = indexed_fixture(&tmp_root);
+    clustering::cluster_graph(&store, 1.0).expect("cluster_graph");
+
+    let memberships = clustering::collect_cluster_memberships(&store).expect("collect");
+
+    assert_mapping_entries(&memberships);
 
     // Spot-check: the fixture's known function symbols show up.
     let qns: Vec<&str> = memberships

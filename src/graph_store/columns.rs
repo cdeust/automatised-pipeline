@@ -64,6 +64,7 @@ pub(crate) const COLS_FUNCTION: ColTypes = &[
     ("return_type", LogicalType::String),
     ("constructed_types", LogicalType::String),
     ("language", LogicalType::String),
+    ("entry_kind", LogicalType::String),
 ];
 pub(crate) const COLS_METHOD: ColTypes = &[
     ("id", LogicalType::String),

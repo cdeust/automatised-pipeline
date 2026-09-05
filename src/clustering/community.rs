@@ -47,6 +47,7 @@ pub struct ClusteringResult {
 
 pub fn cluster_graph(store: &GraphStore, gamma: f64) -> Result<ClusteringResult, String> {
     let start = Instant::now();
+    store.require_entry_metadata()?;
     purge_prior_clustering(store)?;
     let adj = extract_adjacency(store)?;
 

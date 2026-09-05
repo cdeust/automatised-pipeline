@@ -266,6 +266,15 @@ pub(crate) fn attempt_bootstrap(
     }
 }
 
+/// A snapshot's archive format can be compatible while its graph columns are
+/// obsolete. Refuse before publishing freshness or attempting an incremental
+/// fill: only a full reparse can recover discarded Rust harness attributes.
+fn import_compatible_artifact(codebase: &Path, graph_dir: &Path) -> Result<(), String> {
+    artifact::import_artifact(codebase, graph_dir)?;
+    let store = graph_store::GraphStore::open_or_create(graph_dir)?;
+    store.require_entry_metadata()
+}
+
 /// Imports the snapshot into `graph_dir` and builds the bootstrap response
 /// WITHOUT a fill (fresh, or accept_stale). On import failure, logs loudly and
 /// returns `Reindex(None)`. When `stale` is set, the response carries a
@@ -282,7 +291,7 @@ pub(crate) fn bootstrap_import(
     meta: &artifact::ArtifactMeta,
     stale: Option<artifact::StaleInfo>,
 ) -> BootstrapOutcome {
-    if let Err(e) = artifact::import_artifact(codebase, graph_dir) {
+    if let Err(e) = import_compatible_artifact(codebase, graph_dir) {
         eprintln!(
             "[ap] artifact bootstrap failed ({e}); falling back to full index of {}",
             codebase.display()
@@ -334,7 +343,7 @@ pub(crate) fn bootstrap_import_and_fill(
     info: artifact::StaleInfo,
     options: &indexer::IndexOptions,
 ) -> BootstrapOutcome {
-    if let Err(e) = artifact::import_artifact(codebase, graph_dir) {
+    if let Err(e) = import_compatible_artifact(codebase, graph_dir) {
         eprintln!(
             "[ap] artifact bootstrap failed ({e}); falling back to full index of {}",
             codebase.display()
