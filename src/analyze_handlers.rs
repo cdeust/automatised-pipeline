@@ -169,10 +169,10 @@ pub(crate) fn do_analyze_codebase(arguments: &Value) -> Result<Value, String> {
     }
     let total_start = std::time::Instant::now();
 
-    // Phase 1: index, then BOTH sidecars — manifest first, `meta.json` last.
+    // Phase 1: index, then coverage + manifest before the metadata commit point.
     let index_result =
         indexer::index_codebase_with_language(&req.codebase, &req.graph_dir, &req.options)?;
-    let sidecar_err = persist_analyze_sidecars(&req);
+    let sidecar_err = persist_analyze_sidecars(&req, &index_result.coverage)?;
     // Phase 2: resolve, then optionally refine with an LSP.
     let store = graph_store::GraphStore::open_or_create(&index_result.graph_path)?;
     let resolve_result = resolver::resolve_graph(&store)?;
@@ -189,12 +189,13 @@ pub(crate) fn do_analyze_codebase(arguments: &Value) -> Result<Value, String> {
         lsp_result.as_ref(),
         total_start.elapsed().as_millis() as u64,
     );
+    response["coverage"] = crate::indexing_handlers::coverage_summary(&index_result.coverage);
     report_sidecar_error(&mut response, sidecar_err);
     Ok(response)
 }
 
-/// Writes the two sidecars a completed `analyze_codebase` leaves beside the
-/// graph, in the one order every path uses: manifest first, `meta.json` last.
+/// Writes coverage and the manifest before `meta.json`, the commit point.
+/// Coverage is replaced on every full analysis, including an empty gap map.
 ///
 /// `analyze_codebase` used to write `meta.json` and NO manifest at all
 /// (fleet-watch#112 review round 6). It and `index_codebase` are documented as
@@ -205,19 +206,27 @@ pub(crate) fn do_analyze_codebase(arguments: &Value) -> Result<Value, String> {
 /// is equally wrong in the other direction — the freshness check then has
 /// nothing to compare and can never answer.
 ///
-/// Best-effort, like the index path: the graph is the product. The error is
-/// returned so the caller can say so rather than leave it to a log nobody reads.
-fn persist_analyze_sidecars(req: &AnalyzeRequest) -> Option<String> {
+/// Manifest/meta writes remain best-effort and surface their error. A coverage
+/// write failure propagates so a stale or missing receipt cannot be reported
+/// as a successful analysis.
+fn persist_analyze_sidecars(
+    req: &AnalyzeRequest,
+    coverage: &indexer::coverage::CoverageReport,
+) -> Result<Option<String>, String> {
+    // Source: dy-wcet stdio reproduction (2026-09-06): analyze discarded
+    // IndexResult.coverage, leaving query_graph(graph="missed") unavailable
+    // or stale. A failed write must not return a successful coverage receipt.
+    indexer::coverage::save(&indexer::coverage::coverage_path(&req.output_dir), coverage)?;
     let manifest_path = indexer::manifest::manifest_path(&req.output_dir);
     if let Err(e) = indexer::write_full_manifest(&req.codebase, &manifest_path, &req.options) {
         eprintln!("[ap] file manifest write failed (analyze succeeded): {e}");
-        return Some(e);
+        return Ok(Some(e));
     }
-    write_graph_meta(&req.output_dir, &req.codebase)
+    Ok(write_graph_meta(&req.output_dir, &req.codebase)
         .err()
         .inspect(|e| {
             eprintln!("[ap] graph meta sidecar write failed (analyze succeeded): {e}");
-        })
+        }))
 }
 
 /// Surfaces a failed sidecar write on the response rather than leaving the
