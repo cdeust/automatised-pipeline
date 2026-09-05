@@ -45,6 +45,24 @@ It is the **codebase intelligence layer** that sits between a finding ("this bug
 
 ## What an agent can ask it
 
+For inferred Rust receiver calls, pass `lsp: true` to `analyze_codebase` and
+install rust-analyzer. The response's `lsp_status.state` distinguishes
+`disabled`, `completed`, and `failed`; failures retain their error and analysis
+continues on the available graph, which may contain partial LSP results.
+`lsp_resolve` retains the pass's counts; `resolve.phase = "static"` identifies
+the separate static-resolution receipt. Completion does not mean every call
+was resolved.
+
+Analysis persists its coverage report for `query_graph(graph="missed")` and
+returns the same summary. Rust processes use explicit `#[test]` and
+`#[kani::proof]` attributes, with separate `test` and `proof` entry kinds.
+These are source declarations, not evidence of execution or successful proof.
+([Rust testing attributes](https://doc.rust-lang.org/reference/attributes/testing.html),
+[Kani proof attributes](https://model-checking.github.io/kani/reference/attributes.html).)
+Graphs created before entry metadata was stored require a full reindex:
+`analyze_codebase` rebuilds them, and `index_codebase` automatically falls back
+to a full index when its incremental compatibility check detects the old schema.
+
 ```
 analyze_codebase(path: "/path/to/project", output_dir: "/tmp/run")
   → index + resolve + cluster + build search index in one call

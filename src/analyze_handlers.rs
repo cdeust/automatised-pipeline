@@ -19,6 +19,9 @@ use crate::lsp_resolver;
 use crate::query_handlers::*;
 use crate::resolver;
 
+mod lsp_outcome;
+use lsp_outcome::LspOutcome;
+
 // ---------------------------------------------------------------------------
 // Stage 3 — analyze_codebase (all-in-one: index + resolve + cluster)
 // ---------------------------------------------------------------------------
@@ -88,27 +91,28 @@ impl AnalyzeRequest {
     }
 }
 
-/// Phase 2b, optional. Graceful fallback by contract: any LSP error yields
-/// `None` and the pipeline continues on the static resolution alone.
-fn lsp_phase(
-    req: &AnalyzeRequest,
-    store: &graph_store::GraphStore,
-) -> Option<crate::lsp_client::LspResolutionResult> {
+/// Phase 2b, optional. Preserve the failure reason while analysis continues.
+/// The resolver can fail after edge writes, so fallback may include partial LSP.
+/// Source: analyze_lsp_status stdio regression — `.ok()` made a missing
+/// requested language server indistinguishable from a disabled LSP phase.
+fn lsp_phase(req: &AnalyzeRequest, store: &graph_store::GraphStore) -> LspOutcome {
     if !req.enable_lsp {
-        return None;
+        return LspOutcome::Disabled;
     }
     let effective_lang = match req.lang_filter {
         Some(lang) => lang.as_str().to_string(),
         None => detect_dominant_language(&req.codebase),
     };
-    lsp_resolver::resolve_with_lsp(
+    match lsp_resolver::resolve_with_lsp(
         store,
         &req.codebase,
         &effective_lang,
         None,
         std::time::Duration::from_secs(30),
-    )
-    .ok()
+    ) {
+        Ok(result) => LspOutcome::Completed(result),
+        Err(error) => LspOutcome::Failed(error),
+    }
 }
 
 /// The four phases' counts, as one response.
@@ -117,7 +121,7 @@ fn analyze_envelope(
     resolve_result: &resolver::ResolutionResult,
     cluster_result: &clustering::ClusteringResult,
     search_index_result: &search::SearchIndexResult,
-    lsp_result: Option<&crate::lsp_client::LspResolutionResult>,
+    lsp_result: &LspOutcome,
     total_ms: u64,
 ) -> Value {
     json!({
@@ -131,6 +135,7 @@ fn analyze_envelope(
             "files_indexed": index_result.files_indexed,
         },
         "resolve": {
+            "phase": "static",
             "total_edges": resolve_result.total_edges,
             "resolution_rate": format!("{:.2}",
                 if resolve_result.total_refs > 0 {
@@ -147,15 +152,8 @@ fn analyze_envelope(
             "vector_doc_count": search_index_result.vector_doc_count,
             "elapsed_ms": search_index_result.elapsed_ms,
         },
-        "lsp_resolve": match lsp_result {
-            Some(r) => json!({
-                "resolved_count": r.resolved_count,
-                "failed_count": r.failed_count,
-                "skipped_count": r.skipped_count,
-                "elapsed_ms": r.elapsed_ms,
-            }),
-            None => json!(null),
-        },
+        "lsp_resolve": lsp_result.counts(),
+        "lsp_status": lsp_result.status(),
         "total_elapsed_ms": total_ms,
     })
 }
@@ -186,7 +184,7 @@ pub(crate) fn do_analyze_codebase(arguments: &Value) -> Result<Value, String> {
         &resolve_result,
         &cluster_result,
         &search_index_result,
-        lsp_result.as_ref(),
+        &lsp_result,
         total_start.elapsed().as_millis() as u64,
     );
     response["coverage"] = crate::indexing_handlers::coverage_summary(&index_result.coverage);

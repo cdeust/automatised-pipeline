@@ -42,7 +42,7 @@ pub(super) fn analyze_codebase_schema() -> Value {
                 "lsp": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Enable LSP-enhanced resolution after the static resolve pass. Requires the language server to be installed. Default: false."
+                    "description": "Enable LSP-enhanced resolution after the static resolve pass. Required for inferred Rust receiver calls; the language server must be installed. Default: false. Response lsp_status distinguishes disabled, completed, and failed (with error; analysis continues on the available graph, which may include partial LSP results). Completed does not imply all sites resolved; lsp_resolve retains counts. The resolve receipt describes the static phase only."
                 },
                 "dependency_scope": dependency_scope_param(),
                 "include_dependencies": include_dependencies_param(),
