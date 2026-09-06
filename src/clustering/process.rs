@@ -45,6 +45,17 @@ struct EntryRule {
 /// was detected, a Python utility script.
 /// source: Pictet-tech-fest benchmark 2026-05-20 / RUST_BUGS_VERIFIED.md
 const ENTRY_RULES: &[EntryRule] = &[
+    // Explicit harness attributes precede names; annotations are not execution.
+    EntryRule {
+        predicate: "f.language = 'rust' AND f.entry_kind = 'proof'",
+        kind: "proof",
+        confidence: 1.0,
+    },
+    EntryRule {
+        predicate: "f.language = 'rust' AND f.entry_kind = 'test'",
+        kind: "test",
+        confidence: 1.0,
+    },
     EntryRule {
         predicate: "f.name = 'main'",
         kind: "main",
@@ -64,7 +75,7 @@ const ENTRY_RULES: &[EntryRule] = &[
         confidence: 0.9,
     },
     EntryRule {
-        predicate: "f.name STARTS WITH 'test_'",
+        predicate: "(f.language IS NULL OR f.language <> 'rust') AND f.name STARTS WITH 'test_'",
         kind: "test",
         confidence: 1.0,
     },
@@ -107,12 +118,12 @@ const ENTRY_RULES: &[EntryRule] = &[
     },
     // JUnit / Vitest patterns beyond the original `test_` prefix.
     EntryRule {
-        predicate: "f.name STARTS WITH 'test' AND NOT f.name STARTS WITH 'test_'",
+        predicate: "(f.language IS NULL OR f.language <> 'rust') AND f.name STARTS WITH 'test' AND NOT f.name STARTS WITH 'test_'",
         kind: "test",
         confidence: 1.0,
     },
     EntryRule {
-        predicate: "f.name ENDS WITH 'Test'",
+        predicate: "(f.language IS NULL OR f.language <> 'rust') AND f.name ENDS WITH 'Test'",
         kind: "test",
         confidence: 1.0,
     },
@@ -438,6 +449,7 @@ fn collect_call_edges(store: &GraphStore) -> Result<HashMap<String, Vec<String>>
 // ---------------------------------------------------------------------------
 
 pub fn trace_processes(store: &GraphStore) -> Result<u64, String> {
+    store.require_entry_metadata()?;
     let entries = detect_entry_points(store)?;
     let call_edges = collect_call_edges(store)?;
     // Single scan: build id -> label once so persist_participates_in needs

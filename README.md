@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/Rust-1.95.0_pinned-dea584.svg" alt="Rust 1.95.0, pinned by rust-toolchain.toml">
   <img src="https://img.shields.io/badge/Tools-26-orange" alt="26 MCP tools">
   <img src="https://img.shields.io/badge/Tests-1500+_passing-brightgreen" alt="1500+ tests">
-  <img src="https://img.shields.io/badge/Coverage-90%25-brightgreen" alt="90% line coverage">
+  <img src="https://img.shields.io/badge/Coverage-91%25-brightgreen" alt="91% line coverage">
   <a href="https://www.bestpractices.dev/projects/13845"><img src="https://www.bestpractices.dev/projects/13845/badge" alt="OpenSSF Best Practices"></a>
   <img src="https://img.shields.io/badge/Languages-11-blueviolet" alt="11 languages">
   <img src="https://img.shields.io/badge/Stages-0_through_9-8A2BE2" alt="Stages">
@@ -44,6 +44,24 @@ It is the **codebase intelligence layer** that sits between a finding ("this bug
 ---
 
 ## What an agent can ask it
+
+For inferred Rust receiver calls, pass `lsp: true` to `analyze_codebase` and
+install rust-analyzer. The response's `lsp_status.state` distinguishes
+`disabled`, `completed`, and `failed`; failures retain their error and analysis
+continues on the available graph, which may contain partial LSP results.
+`lsp_resolve` retains the pass's counts; `resolve.phase = "static"` identifies
+the separate static-resolution receipt. Completion does not mean every call
+was resolved.
+
+Analysis persists its coverage report for `query_graph(graph="missed")` and
+returns the same summary. Rust processes use explicit `#[test]` and
+`#[kani::proof]` attributes, with separate `test` and `proof` entry kinds.
+These are source declarations, not evidence of execution or successful proof.
+([Rust testing attributes](https://doc.rust-lang.org/reference/attributes/testing.html),
+[Kani proof attributes](https://model-checking.github.io/kani/reference/attributes.html).)
+Graphs created before entry metadata was stored require a full reindex:
+`analyze_codebase` rebuilds them, and `index_codebase` automatically falls back
+to a full index when its incremental compatibility check detects the old schema.
 
 ```
 analyze_codebase(path: "/path/to/project", output_dir: "/tmp/run")

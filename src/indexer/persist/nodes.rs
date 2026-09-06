@@ -223,7 +223,13 @@ fn find_property(node: &parser::ExtractedNode, key: &str) -> String {
 /// re-opening at the next property added.
 fn append_label_properties(props: &mut Vec<(String, String)>, node: &parser::ExtractedNode) {
     match node.label.as_str() {
-        "Function" => append_function_properties(props, node),
+        "Function" => {
+            append_function_properties(props, node);
+            props.push((
+                "entry_kind".to_string(),
+                cypher_str(&find_property(node, "entry_kind")),
+            ));
+        }
         "Method" => append_method_properties(props, node),
         // Field and Constant carry the identical single property.
         "Field" | "Constant" => props.push((

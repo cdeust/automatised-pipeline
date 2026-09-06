@@ -126,6 +126,7 @@ pub fn index_incremental(
 ) -> Result<IncrementalResult, String> {
     let start = Instant::now();
     let store = GraphStore::open_or_create(graph_dir)?;
+    store.require_entry_metadata()?;
     // No create_schema() here: the graph already exists (this path is reached
     // only when a prior full index built it with the current schema), and the
     // DDL pass is ~0.4s of pure fixed cost that would defeat the whole point of
@@ -505,6 +506,7 @@ pub fn fill_after_bootstrap(
     let dependency_scope = options.dependency_scope;
     // No create_schema(): the imported artifact graph already carries the schema.
     let store = GraphStore::open_or_create(graph_dir)?;
+    store.require_entry_metadata()?;
     let walk_opts = WalkOptions {
         language_filter: options.language_filter,
         dependency_scope,

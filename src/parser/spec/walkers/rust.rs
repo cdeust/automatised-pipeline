@@ -249,6 +249,53 @@ pub(super) fn decl_list_body<'t>(specs: RustSpecs, node: Node<'t>) -> Option<Nod
     }
 }
 
+/// Classifies only exact, argument-free outer attribute paths. These markers
+/// declare harness entry points, never successful test/proof execution.
+/// Sources: Rust Reference attributes/testing.html; Kani reference/attributes.html.
+fn entry_attribute(source: &str, item: Node) -> Option<&'static str> {
+    let attribute = item.named_child(0)?;
+    if attribute.kind() != "attribute"
+        || attribute.child_by_field_name("arguments").is_some()
+        || attribute.child_by_field_name("value").is_some()
+    {
+        return None;
+    }
+    let path = attribute.named_child(0)?;
+    if path.kind() == "identifier" && node_text(source, path) == "test" {
+        return Some("test");
+    }
+    if path.kind() != "scoped_identifier" {
+        return None;
+    }
+    let prefix = path.child_by_field_name("path")?;
+    let name = path.child_by_field_name("name")?;
+    (prefix.kind() == "identifier"
+        && node_text(source, prefix) == "kani"
+        && name.kind() == "identifier"
+        && node_text(source, name) == "proof")
+        .then_some("proof")
+}
+
+/// Outer attributes belong to the immediately following item; comments may
+/// intervene. Stop at any other item, so an attribute cannot leak to a sibling.
+fn function_entry_kind(source: &str, node: Node) -> Option<&'static str> {
+    let mut sibling = node.prev_named_sibling();
+    let mut kind = None;
+    while let Some(previous) = sibling {
+        match previous.kind() {
+            "attribute_item" => match entry_attribute(source, previous) {
+                Some("proof") => return Some("proof"),
+                Some(marker) => kind = Some(marker),
+                None => {}
+            },
+            "line_comment" | "block_comment" => {}
+            _ => break,
+        }
+        sibling = previous.prev_named_sibling();
+    }
+    kind
+}
+
 /// Emits a free function (`Function` + `Defines`) and scans its body for calls.
 fn emit_function(specs: RustSpecs, ctx: &mut WalkCtx, node: Node, scope: &str) {
     let spec = specs.spec;
@@ -262,6 +309,9 @@ fn emit_function(specs: RustSpecs, ctx: &mut WalkCtx, node: Node, scope: &str) {
         "is_async".to_string(),
         has_async(specs.rf, node).to_string(),
     )];
+    if let Some(kind) = function_entry_kind(ctx.source, node) {
+        properties.push(("entry_kind".to_string(), kind.to_string()));
+    }
     // Return type + constructed types (issue #92).
     type_uses::append_type_use_props(spec, ctx, node, call_scan_of(spec, node), &mut properties);
     push_def(

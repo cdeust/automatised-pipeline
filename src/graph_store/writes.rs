@@ -166,6 +166,22 @@ impl GraphStore {
         Ok(!self.execute_query(&cypher)?.rows.is_empty())
     }
 
+    /// Old graphs discarded Rust entry attributes. Adding an empty column
+    /// cannot recover them: reparse every file through the full-index handler.
+    /// Read-only so callers can check compatibility before mutating a graph.
+    pub fn require_entry_metadata(&self) -> Result<(), String> {
+        let info = self.execute_query("CALL table_info('Function') RETURN *")?;
+        if info
+            .rows
+            .iter()
+            .any(|row| row.get(1).is_some_and(|name| name == "entry_kind"))
+        {
+            Ok(())
+        } else {
+            Err("graph lacks Rust entry attribute metadata; full reindex required (index_codebase with full: true)".into())
+        }
+    }
+
     /// Adds `column` to node table `label` when the table does not already
     /// carry it, and reports whether it had to be added.
     ///

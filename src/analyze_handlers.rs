@@ -19,6 +19,9 @@ use crate::lsp_resolver;
 use crate::query_handlers::*;
 use crate::resolver;
 
+mod lsp_outcome;
+use lsp_outcome::LspOutcome;
+
 // ---------------------------------------------------------------------------
 // Stage 3 — analyze_codebase (all-in-one: index + resolve + cluster)
 // ---------------------------------------------------------------------------
@@ -88,27 +91,28 @@ impl AnalyzeRequest {
     }
 }
 
-/// Phase 2b, optional. Graceful fallback by contract: any LSP error yields
-/// `None` and the pipeline continues on the static resolution alone.
-fn lsp_phase(
-    req: &AnalyzeRequest,
-    store: &graph_store::GraphStore,
-) -> Option<crate::lsp_client::LspResolutionResult> {
+/// Phase 2b, optional. Preserve the failure reason while analysis continues.
+/// The resolver can fail after edge writes, so fallback may include partial LSP.
+/// Source: analyze_lsp_status stdio regression — `.ok()` made a missing
+/// requested language server indistinguishable from a disabled LSP phase.
+fn lsp_phase(req: &AnalyzeRequest, store: &graph_store::GraphStore) -> LspOutcome {
     if !req.enable_lsp {
-        return None;
+        return LspOutcome::Disabled;
     }
     let effective_lang = match req.lang_filter {
         Some(lang) => lang.as_str().to_string(),
         None => detect_dominant_language(&req.codebase),
     };
-    lsp_resolver::resolve_with_lsp(
+    match lsp_resolver::resolve_with_lsp(
         store,
         &req.codebase,
         &effective_lang,
         None,
         std::time::Duration::from_secs(30),
-    )
-    .ok()
+    ) {
+        Ok(result) => LspOutcome::Completed(result),
+        Err(error) => LspOutcome::Failed(error),
+    }
 }
 
 /// The four phases' counts, as one response.
@@ -117,7 +121,7 @@ fn analyze_envelope(
     resolve_result: &resolver::ResolutionResult,
     cluster_result: &clustering::ClusteringResult,
     search_index_result: &search::SearchIndexResult,
-    lsp_result: Option<&crate::lsp_client::LspResolutionResult>,
+    lsp_result: &LspOutcome,
     total_ms: u64,
 ) -> Value {
     json!({
@@ -131,6 +135,7 @@ fn analyze_envelope(
             "files_indexed": index_result.files_indexed,
         },
         "resolve": {
+            "phase": "static",
             "total_edges": resolve_result.total_edges,
             "resolution_rate": format!("{:.2}",
                 if resolve_result.total_refs > 0 {
@@ -147,15 +152,8 @@ fn analyze_envelope(
             "vector_doc_count": search_index_result.vector_doc_count,
             "elapsed_ms": search_index_result.elapsed_ms,
         },
-        "lsp_resolve": match lsp_result {
-            Some(r) => json!({
-                "resolved_count": r.resolved_count,
-                "failed_count": r.failed_count,
-                "skipped_count": r.skipped_count,
-                "elapsed_ms": r.elapsed_ms,
-            }),
-            None => json!(null),
-        },
+        "lsp_resolve": lsp_result.counts(),
+        "lsp_status": lsp_result.status(),
         "total_elapsed_ms": total_ms,
     })
 }
@@ -169,10 +167,10 @@ pub(crate) fn do_analyze_codebase(arguments: &Value) -> Result<Value, String> {
     }
     let total_start = std::time::Instant::now();
 
-    // Phase 1: index, then BOTH sidecars — manifest first, `meta.json` last.
+    // Phase 1: index, then coverage + manifest before the metadata commit point.
     let index_result =
         indexer::index_codebase_with_language(&req.codebase, &req.graph_dir, &req.options)?;
-    let sidecar_err = persist_analyze_sidecars(&req);
+    let sidecar_err = persist_analyze_sidecars(&req, &index_result.coverage)?;
     // Phase 2: resolve, then optionally refine with an LSP.
     let store = graph_store::GraphStore::open_or_create(&index_result.graph_path)?;
     let resolve_result = resolver::resolve_graph(&store)?;
@@ -186,15 +184,16 @@ pub(crate) fn do_analyze_codebase(arguments: &Value) -> Result<Value, String> {
         &resolve_result,
         &cluster_result,
         &search_index_result,
-        lsp_result.as_ref(),
+        &lsp_result,
         total_start.elapsed().as_millis() as u64,
     );
+    response["coverage"] = crate::indexing_handlers::coverage_summary(&index_result.coverage);
     report_sidecar_error(&mut response, sidecar_err);
     Ok(response)
 }
 
-/// Writes the two sidecars a completed `analyze_codebase` leaves beside the
-/// graph, in the one order every path uses: manifest first, `meta.json` last.
+/// Writes coverage and the manifest before `meta.json`, the commit point.
+/// Coverage is replaced on every full analysis, including an empty gap map.
 ///
 /// `analyze_codebase` used to write `meta.json` and NO manifest at all
 /// (fleet-watch#112 review round 6). It and `index_codebase` are documented as
@@ -205,19 +204,27 @@ pub(crate) fn do_analyze_codebase(arguments: &Value) -> Result<Value, String> {
 /// is equally wrong in the other direction — the freshness check then has
 /// nothing to compare and can never answer.
 ///
-/// Best-effort, like the index path: the graph is the product. The error is
-/// returned so the caller can say so rather than leave it to a log nobody reads.
-fn persist_analyze_sidecars(req: &AnalyzeRequest) -> Option<String> {
+/// Manifest/meta writes remain best-effort and surface their error. A coverage
+/// write failure propagates so a stale or missing receipt cannot be reported
+/// as a successful analysis.
+fn persist_analyze_sidecars(
+    req: &AnalyzeRequest,
+    coverage: &indexer::coverage::CoverageReport,
+) -> Result<Option<String>, String> {
+    // Source: dy-wcet stdio reproduction (2026-09-06): analyze discarded
+    // IndexResult.coverage, leaving query_graph(graph="missed") unavailable
+    // or stale. A failed write must not return a successful coverage receipt.
+    indexer::coverage::save(&indexer::coverage::coverage_path(&req.output_dir), coverage)?;
     let manifest_path = indexer::manifest::manifest_path(&req.output_dir);
     if let Err(e) = indexer::write_full_manifest(&req.codebase, &manifest_path, &req.options) {
         eprintln!("[ap] file manifest write failed (analyze succeeded): {e}");
-        return Some(e);
+        return Ok(Some(e));
     }
-    write_graph_meta(&req.output_dir, &req.codebase)
+    Ok(write_graph_meta(&req.output_dir, &req.codebase)
         .err()
         .inspect(|e| {
             eprintln!("[ap] graph meta sidecar write failed (analyze succeeded): {e}");
-        })
+        }))
 }
 
 /// Surfaces a failed sidecar write on the response rather than leaving the
