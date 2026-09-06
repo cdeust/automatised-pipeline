@@ -65,7 +65,7 @@ jobs:
             libzstd-dev pkg-config cmake
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # v1
         with:
           # Required input: `@stable` carried the version in the REF, so
           # pinning the action to a SHA drops it and the action hard-fails
@@ -180,7 +180,7 @@ jobs:
             libzstd-dev pkg-config cmake
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # v1
         with:
           toolchain: "1.95.0"
           components: clippy
@@ -241,7 +241,7 @@ jobs:
             libzstd-dev pkg-config cmake
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # v1
         with:
           toolchain: "1.95.0"
           # llvm-tools ships llvm-profdata/llvm-cov, which cargo-llvm-cov

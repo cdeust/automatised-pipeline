@@ -59,7 +59,7 @@ jobs:
       # from the workspace (see the root Cargo.toml) so this nightly requirement
       # never reaches the stable build.
       - name: Install nightly toolchain
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # v1
         with:
           toolchain: nightly
 

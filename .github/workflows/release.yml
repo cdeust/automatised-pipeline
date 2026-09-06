@@ -91,7 +91,7 @@ jobs:
             exit 1
           fi
 
-      - uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: ${{ github.ref_name }}
           generate_release_notes: true
@@ -163,7 +163,7 @@ jobs:
       # little. Action pinned to a SHA; version comes from rust-toolchain.toml,
       # which local builds read too (issue #66).
       - name: Install Rust toolchain (pinned)
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # v1
         with:
           toolchain: "1.95.0"
           targets: ${{ matrix.rust_target }}
@@ -288,7 +288,7 @@ jobs:
           ls -la "ai-architect-mcp-codebase-${{ matrix.target_tag }}.tar.gz.sigstore.json"
 
       - name: Upload release assets
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           # Release was pre-created by the create_release job; we only
           # upload here. tag_name pins the upload to that release so
@@ -320,7 +320,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Install pinned Rust toolchain
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # v1
         with:
           toolchain: "1.95.0"
 
@@ -354,7 +354,7 @@ jobs:
           ls -la ai-architect-mcp-codebase.cdx.json.sigstore.json
 
       - name: Upload SBOM to release
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: ${{ github.ref_name }}
           draft: true
@@ -465,7 +465,7 @@ jobs:
         run: cp "$ATTESTATION_BUNDLE" mcp-contract.json.sigstore.json
 
       - name: Upload .mcpb to release
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: ${{ github.ref_name }}
           draft: true
