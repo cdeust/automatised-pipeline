@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/Rust-1.95.0_pinned-dea584.svg" alt="Rust 1.95.0, pinned by rust-toolchain.toml">
   <img src="https://img.shields.io/badge/Tools-26-orange" alt="26 MCP tools">
   <img src="https://img.shields.io/badge/Tests-1500+_passing-brightgreen" alt="1500+ tests">
-  <img src="https://img.shields.io/badge/Coverage-90%25-brightgreen" alt="90% line coverage">
+  <img src="https://img.shields.io/badge/Coverage-91%25-brightgreen" alt="91% line coverage">
   <a href="https://www.bestpractices.dev/projects/13845"><img src="https://www.bestpractices.dev/projects/13845/badge" alt="OpenSSF Best Practices"></a>
   <img src="https://img.shields.io/badge/Languages-11-blueviolet" alt="11 languages">
   <img src="https://img.shields.io/badge/Stages-0_through_9-8A2BE2" alt="Stages">
